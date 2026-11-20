@@ -1,0 +1,5 @@
+{
+  "dependencies": ["."],
+  "graphs": {"sav": "./agent_sav/studio.py:graph"},
+  "env": ".env"
+}

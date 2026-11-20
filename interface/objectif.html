@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="L’objectif de l’agent SAV e-commerce et sa démonstration de reprise après une coupure.">
+  <title>Objectif du projet · Agent SAV</title>
+  <link rel="stylesheet" href="theme.css">
+  <style>
+    body { line-height: 1.6; }
+    a { color: var(--accent); text-underline-offset: .2em; }
+    a:hover { color: var(--accent-hover); }
+    h1, h2, h3, p, blockquote { margin: 0; }
+    h1, h2 { line-height: 1.08; font-weight: 700; }
+    h1 { font-size: clamp(2.4rem, 7vw, 5rem); letter-spacing: -.065em; }
+    h2 { font-size: clamp(1.9rem, 4vw, 2.7rem); letter-spacing: -.035em; }
+    h3 { font-size: 1.075rem; line-height: 1.35; }
+
+    .shell { width: min(66rem, calc(100% - 3rem)); margin-inline: auto; }
+    .hero {
+      background: radial-gradient(ellipse at 70% 0%, #26352f 0%, transparent 72%), #151923;
+      border-bottom: 1px solid var(--line);
+      padding: clamp(3rem, 8vw, 6rem) 0;
+    }
+    .hero hgroup p { margin-bottom: .85rem; color: var(--accent); font-size: .875rem; font-weight: 650; }
+    .hero .lead { max-width: 43rem; margin-top: 1.2rem; color: var(--muted); font-size: clamp(1rem, 2vw, 1.3rem); }
+    main { padding-block: clamp(2rem, 5vw, 3.6rem); }
+    main > section + section { margin-top: clamp(2.3rem, 6vw, 4rem); }
+    section > p { margin-top: .9rem; max-width: 72ch; color: var(--muted); }
+    blockquote {
+      margin-top: 1.25rem;
+      padding: .8rem 1rem;
+      border-left: 3px solid var(--accent);
+      border-radius: 0 .65rem .65rem 0;
+      background: var(--accent-surface);
+      color: var(--accent);
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: .85rem;
+      margin: 1.1rem 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .steps li { padding: 1.35rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--surface); }
+    .steps p { margin-top: .45rem; color: var(--muted); }
+
+    .proof {
+      padding: clamp(1.2rem, 4vw, 2.25rem);
+      border: 1px solid #405442;
+      border-radius: 1rem;
+      background: linear-gradient(125deg, var(--accent-surface), var(--surface));
+    }
+    .proof strong { color: var(--accent); }
+    .metrics { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0; margin: 1rem 0 0; list-style: none; }
+    .metrics li { padding: .4rem .8rem; border: 1px solid var(--line); border-radius: 2rem; background: var(--surface); }
+    footer { padding-bottom: 2.5rem; }
+    footer .shell { padding-top: 1.1rem; border-top: 1px solid var(--line); }
+
+    @media (max-width: 42rem) {
+      .shell { width: calc(100% - 2rem); }
+      .steps { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="shell">
+      <hgroup>
+        <p>Objectif du projet</p>
+        <h1>Agent SAV e&#8209;commerce</h1>
+      </hgroup>
+      <p class="lead">Traiter un retour ou un échange à partir d’un message client,
+        puis reprendre le dossier après une coupure sans créer de doublon.</p>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section aria-labelledby="parcours">
+      <h2 id="parcours">Du message à l’échange</h2>
+      <blockquote>«&nbsp;Le pull est trop petit, je veux le même en M.&nbsp;»</blockquote>
+      <ol class="steps" role="list">
+        <li>
+          <h3>Comprendre la demande</h3>
+          <p>Mistral Large 4 lit le message et en extrait une demande d’échange
+            vers la taille M.</p>
+        </li>
+        <li>
+          <h3>Vérifier et attendre l’accord</h3>
+          <p>Le code vérifie la commande. LangGraph met le dossier en pause et
+            sauvegarde son état dans PostgreSQL pour pouvoir reprendre plus tard.</p>
+        </li>
+        <li>
+          <h3>Exécuter l’échange</h3>
+          <p>Après l’accord, le service marchand réserve la taille M et crée le
+            retour dans une seule transaction. Si le stock est épuisé, aucun
+            retour n’est créé.</p>
+        </li>
+      </ol>
+      <p>Le LLM intervient uniquement pour interpréter la demande. Le code
+        décide si l’échange peut être exécuté et effectue les écritures en base.</p>
+    </section>
+
+    <section class="proof" aria-labelledby="demo">
+      <h2 id="demo">Et si la confirmation se perd ?</h2>
+      <p>La boutique a enregistré le retour, mais la réponse n’arrive pas.
+        LangGraph ne sait donc pas si l’opération a abouti. À la reprise, il
+        réessaie avec le même identifiant de dossier. Cet identifiant sert de
+        <strong>clé d’idempotence</strong>. La boutique retrouve le retour
+        existant et renvoie sa référence.</p>
+      <p><strong>Vérifié en base après la reprise</strong> · Un seul retour
+        créé et une seule unité de stock réservée. Le scénario a été testé
+        avec un appel réel à Mistral Large 4 et une boutique simulée. Un second
+        test couvre la rupture de stock pendant l’attente.</p>
+    </section>
+
+    <section aria-labelledby="portfolio">
+      <h2 id="portfolio">Ce que je veux mesurer</h2>
+      <p>Le prototype tourne dans le terminal avec une commande fictive. Pour
+        le portfolio, je veux comparer sur les mêmes cas un workflow à règles,
+        un LLM qui appelle directement les outils et le workflow persistant.
+        L’objectif est de voir quand le modèle aide à comprendre la demande
+        et quand la reprise évite une erreur d’exécution.</p>
+      <ul class="metrics" role="list">
+        <li>Dossiers correctement résolus</li>
+        <li>Écritures erronées ou en double</li>
+        <li>Coût</li>
+        <li>Latence</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell">
+      <a href="../README.md">Voir les commandes de démo dans le README</a>
+    </div>
+  </footer>
+</body>
+</html>

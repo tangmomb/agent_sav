@@ -1,0 +1,19 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  background: #101217;
+  color: #f2f4f7;
+  --ink: #f2f4f7;
+  --muted: #aeb7c6;
+  --line: #303745;
+  --surface: #191d26;
+  --surface-raised: #242b37;
+  --accent: #c6eb9b;
+  --accent-hover: #dcf8bd;
+  --accent-ink: #18210f;
+  --accent-surface: #232e25;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }

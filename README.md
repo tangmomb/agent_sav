@@ -1,9 +1,83 @@
 # Agent SAV e-commerce
 
-Prototype en ligne de commande pour traiter le retour ou l'échange d'un article
+Prototype avec une boutique web et une interface en ligne de commande pour traiter le retour ou l'échange d'un article
 dans une boutique simulée. Mistral Large 4 extrait l'intention sous forme
 structurée. LangGraph pilote le dossier, PostgreSQL sauvegarde les checkpoints
 et le service marchand gère le stock et l'idempotence.
+
+[Comprendre l’objectif du projet](interface/objectif.html)
+
+## Essayer la boutique fictive
+
+Sous Windows, double-clique sur `lancer_demo.bat` avec l’environnement Python
+installé. Le lanceur démarre les services et ouvre le sommaire qui donne accès à
+la boutique, à la base PostgreSQL dans Pgweb, à LangSmith Studio local et à
+l’objectif du projet.
+Relance le même fichier pour redémarrer les services en conservant les données
+de la démo.
+
+Pour démarrer la boutique depuis PowerShell, avec Docker démarré.
+
+```powershell
+docker compose up -d --wait
+.\.venv\Scripts\python.exe -m agent_sav web
+```
+
+Ouvre [Maison Orme](http://127.0.0.1:8000/) et clique sur **Besoin d’aide ?**
+en bas à droite. Essaie par exemple « Le pull est trop petit, je voudrais du M. »,
+puis confirme l’échange dans le chat. La commande fictive `DEMO-1001` contient
+un pull en taille S.
+
+La boutique utilise Mistral Large 4, le workflow SAV et PostgreSQL. Renseigne
+`MISTRAL_API_KEY` dans `.env` avant d’envoyer un message. Pour lancer
+explicitement la boutique avec des règles sans clé API, utilise `web --demo`.
+
+## Visualiser et tracer le workflow dans LangSmith
+
+Ajoute les lignes suivantes à ton `.env` et renseigne ta clé LangSmith.
+Si le fichier n’existe pas, pars de `.env.example`.
+
+```dotenv
+LANGSMITH_API_KEY=
+LANGSMITH_TRACING=true
+LANGSMITH_PROJECT=agent-sav
+```
+
+### Tester le graphe dans Studio
+
+Lance `lancer_demo.bat`, puis clique sur **LangSmith Studio local** dans le
+sommaire. Ce lien connecte l’interface LangSmith au serveur local sur le port
+`2024`. L’onglet **Studio** du projet hébergé s’ouvre sur les agents rattachés
+à un Agent Server dans LangSmith.
+
+Si Chrome affiche « Failed to initialize Studio », ouvre les paramètres du
+site `smith.langchain.com`, autorise **Accès au réseau local**, puis recharge
+la page. [Dépannage Studio](https://docs.langchain.com/langsmith/troubleshooting-studio#chrome-connection-issues)
+
+Sélectionne le graphe `sav`.
+Dans le mode **Graph**, ouvre **Messages**, sélectionne **Human** et saisis
+« Le pull est trop petit, je voudrais du M. ». En mode JSON, l’entrée équivalente est la suivante.
+
+```json
+{"messages": [{"type": "human", "content": "Le pull est trop petit, je voudrais du M."}]}
+```
+
+À l’interruption `attendre_accord`, reprends avec la valeur JSON `true`
+pour confirmer ou `false` pour annuler. Studio interprète les messages avec
+Mistral Large 4 et garde ses propres sessions. Un échange confirmé dans
+Studio utilise le stock de la boutique fictive dans PostgreSQL.
+Dans **Trace**, déplie `comprendre` et sélectionne **Mistral Large 4** pour
+voir les messages envoyés au modèle, sa réponse et les compteurs de tokens.
+
+### Suivre un échange de la boutique
+
+Après avoir modifié `.env`, relance `lancer_demo.bat` et effectue un nouvel
+échange depuis le chat. Dans **Tracing** sur LangSmith, ouvre le projet
+`agent-sav` et filtre sur le tag `boutique`. La demande et sa confirmation
+ont chacune une trace nommée `SAV boutique`, avec le même `case_id`.
+L’appel à Mistral apparaît sous `comprendre` dans la trace de la demande.
+Les nouveaux messages de la démo sont envoyés à LangSmith quand le
+traçage est activé.
 
 ## Lancer sur Windows
 
@@ -53,8 +127,7 @@ commande sans `--demo`.
 L'identifiant API est [`mistral-large-4`](https://docs.mistral.ai/models/mistral-large-4-0).
 Les messages et checkpoints sont conservés en PostgreSQL local. Utilise des
 messages fictifs pour la démo. Une demande ambiguë s'arrête avec un statut à
-clarifier. Ce socle utilise le terminal comme interface et la boutique simulée
-comme service marchand.
+clarifier.
 
 ## Vérifier
 

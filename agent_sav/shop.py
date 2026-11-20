@@ -3,6 +3,7 @@ from uuid import uuid4
 import psycopg
 
 DEMO_ORDER = "DEMO-1001"
+DEFAULT_DSN = "postgresql://sav:sav@127.0.0.1:55432/sav"
 
 
 class OutOfStock(Exception):

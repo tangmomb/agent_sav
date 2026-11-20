@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Retrouvez votre commande et contactez le service client de Maison Orme.">
+  <title>Ma commande · Maison Orme</title>
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/boutique.css">
+  <script src="/chat.js" defer></script>
+</head>
+<body id="accueil">
+  <div class="announcement">Retours et échanges sous 30 jours</div>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="wordmark" href="#accueil">Maison Orme<span>.</span></a>
+      <div class="account"><span class="initials" aria-hidden="true">CM</span> <span>Mon compte</span></div>
+    </div>
+  </header>
+
+  <main class="shell">
+    <p class="breadcrumb">Mon compte <span aria-hidden="true">/</span> Mes commandes</p>
+    <div class="order-heading">
+      <h1>Ma commande</h1>
+      <p>Commande <strong>#DEMO-1001</strong> <span class="separator" aria-hidden="true">·</span> 1 article</p>
+    </div>
+
+    <div class="order-layout">
+      <article class="product" aria-labelledby="product-name">
+        <div class="product-photo">
+          <img src="/pull.webp" alt="Pull côtelé en laine vert mousse, vu de dessus" width="900" height="600">
+        </div>
+        <div class="product-info">
+          <div>
+            <h2 id="product-name">Pull en laine côtelée</h2>
+            <p><span class="swatch" aria-hidden="true"></span> Vert mousse <span class="separator" aria-hidden="true">·</span> Taille S</p>
+          </div>
+          <strong class="price">89,00 €</strong>
+        </div>
+      </article>
+
+      <aside class="order-sidebar" aria-label="Suivi et assistance">
+        <section class="delivery">
+          <h2>Suivi de livraison</h2>
+          <div class="timeline">
+            <span class="check" aria-hidden="true">✓</span>
+            <div>
+              <strong>Colis livré</strong>
+              <p>Votre commande est arrivée à destination.</p>
+            </div>
+          </div>
+          <dl class="order-total">
+            <dt>Total payé</dt><dd>89,00 €</dd>
+          </dl>
+        </section>
+
+        <section class="help">
+          <h2>Un souci avec votre article ?</h2>
+          <p>Pour un retour ou un changement de taille, notre service client vous accompagne.</p>
+          <button class="contact" type="button" data-open-chat>Contacter le service client</button>
+        </section>
+      </aside>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell footer-inner">
+      <span class="wordmark">Maison Orme<span>.</span></span>
+      <span>Boutique fictive · Commande de démonstration</span>
+    </div>
+  </footer>
+
+  <div class="chat">
+    <section id="chat-panel" class="chat-panel" aria-labelledby="chat-title" hidden>
+      <header class="chat-header">
+        <span class="chat-avatar" aria-hidden="true">O.</span>
+        <div class="chat-heading">
+          <h2 id="chat-title">Service client</h2>
+          <p>Maison Orme</p>
+        </div>
+        <button id="close-chat" class="icon-button" type="button" aria-label="Fermer le chat">×</button>
+      </header>
+      <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text">
+        <p class="message agent">Bonjour ! Je peux vous aider à retourner votre pull ou à l’échanger. Que souhaitez-vous faire ?</p>
+      </div>
+      <div id="chat-actions" class="chat-actions" aria-label="Réponses rapides"></div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" aria-label="Votre message" placeholder="Écrivez votre message…" maxlength="1000" autocomplete="off" required>
+        <button id="send-chat" class="send-button" type="submit" aria-label="Envoyer">
+          <span aria-hidden="true">↑</span>
+        </button>
+      </form>
+    </section>
+    <button type="button" class="chat-launcher" id="chat-launcher" aria-expanded="false" aria-controls="chat-panel">
+      <span class="bubble-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>Besoin d’aide ?</span>
+    </button>
+  </div>
+</body>
+</html>
