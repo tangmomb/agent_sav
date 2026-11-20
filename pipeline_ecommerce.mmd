@@ -1,0 +1,46 @@
+flowchart TD
+    START([START]) --> verif[verifier_statut<br/>SQL]
+    verif -->|en livraison| qLiv{{"Que souhaitez-vous faire ?<br/>annuler / suivi"}}
+    verif -->|validée| qVal{{"Que souhaitez-vous faire ?<br/>annuler / avancement"}}
+    verif -->|livrée| qLivree{{"Que souhaitez-vous faire ?<br/>échange / retour"}}
+    verif -->|autre statut| fallback[agent généraliste]
+
+    %% Branche en livraison
+    qLiv -->|suivi| suivi[get_tracking<br/>API transporteur]
+    suivi --> msgSuivi["Lien de suivi + date estimée"]
+    qLiv -->|annuler| msgTransit["Annulation impossible en transit :<br/>refuser le colis ou retour après réception"]
+
+    %% Branche validée
+    qVal -->|avancement| avanc[get_preparation_status]
+    avanc --> msgAvanc["Étape actuelle + date d'expédition estimée"]
+    qVal -->|annuler| confAnn{{"Confirmer l'annulation ?"}}
+    confAnn -->|oui| annuler[cancel_order + remboursement]
+    annuler --> msgAnn["Annulation confirmée + mail"]
+    confAnn -->|non| qVal
+
+    %% Branche livrée
+    qLivree --> autres[autres commandes à venir ?<br/>SQL]
+    autres -->|oui| qAttendre{{"Attendre la livraison de tout ?"}}
+    autres -->|non| qArticle
+    qAttendre -->|oui| memo["Store : demande en attente"]
+    memo --> msgMemo["Entendu, je garde en mémoire"]
+    qAttendre -->|non| qArticle{{"Quel article ?<br/>liste issue du contexte"}}
+    qArticle --> qMotif{{"Motif ?<br/>défectueux / taille / non conforme / changé d'avis"}}
+    qMotif --> eligible[check_eligibilite<br/>délai, article retournable]
+    eligible -->|non éligible| msgRefus["Explication + proposer un conseiller"]
+    eligible -->|éligible, échange| qVariante{{"Quelle taille / coloris ?"}}
+    eligible -->|éligible, retour| qRemb{{"Remboursement ou avoir ?"}}
+    qVariante --> stock[check_stock]
+    stock -->|dispo| echange[create_exchange + étiquette]
+    stock -->|rupture| qAlt{{"Rupture : autre variante ou retour ?"}}
+    qAlt -->|autre variante| qVariante
+    qAlt -->|retour| qRemb
+    qRemb --> retour[create_return + étiquette]
+    echange --> mail[envoi mail récapitulatif]
+    retour --> mail
+
+    msgSuivi & msgTransit & msgAvanc & msgAnn & msgMemo & msgRefus & mail & fallback --> FIN([END])
+
+    %% Reprise différée
+    memo -.->|webhook : dernière commande livrée| reprise["Relance du client :<br/>on reprend l'échange / retour ?"]
+    reprise -.-> qArticle

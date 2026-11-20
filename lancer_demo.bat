@@ -50,14 +50,15 @@ if errorlevel 1 (
 set "STEP=Demarrer la boutique"
 start "Boutique Maison Orme" /min "%PYTHON%" -m agent_sav web || goto :error
 
+set "STEP=Attendre la boutique sur le port 8000"
+call :wait_for_http "%SHOP_URL%/api/clients" || goto :error
+
 set "STEP=Demarrer le serveur Studio"
 rem Le client LangSmith effectue des appels synchrones pendant le tracage local.
 start "LangGraph Studio" /min "%PYTHON%" -m agent_sav.studio_dev --host 127.0.0.1 --port 2024 --no-browser --allow-blocking || goto :error
 
 set "STEP=Attendre Pgweb sur le port 8081"
 call :wait_for_http "%PGWEB_URL%/" || goto :error
-set "STEP=Attendre la boutique sur le port 8000"
-call :wait_for_http "%SHOP_URL%/chat.js" || goto :error
 set "STEP=Attendre le serveur Studio sur le port 2024"
 call :wait_for_http "%STUDIO_URL%/ok" || goto :error
 

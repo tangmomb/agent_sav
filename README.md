@@ -23,10 +23,21 @@ docker compose up -d --wait
 .\.venv\Scripts\python.exe -m agent_sav web
 ```
 
-Ouvre [Maison Orme](http://127.0.0.1:8000/) et clique sur **Besoin d’aide ?**
-en bas à droite. Écris « Mon pull est trop petit », puis réponds « Du M » quand
-l’agent demande la taille. Ensuite, confirme l’échange dans le chat. La commande
-fictive `DEMO-1001` contient un pull en taille S.
+Ouvre [Mes achats](http://127.0.0.1:8000/mes-achats) et choisis l’un des 20
+comptes fictifs dans le sélecteur en haut de la page. La boutique propose
+20 articles et 2 à 5 commandes par compte. Une commande peut regrouper
+plusieurs articles, chacun affiché avec son prix et sa variante.
+Les commandes affichent le statut **Commande validée**, **En livraison**
+ou **Livrée**. Les retours et échanges sont disponibles après la livraison.
+Clique sur **Contacter le SAV** sur la commande qui t’intéresse. Le premier
+message du chat salue le client par son prénom, détaille les articles et le
+statut de la commande, puis indique combien d’autres commandes sont en
+préparation ou en livraison. Le backend affiche cet accueil à l’ouverture.
+Le graphe démarre au premier message du client.
+Choisis l’article concerné si la commande en contient plusieurs. Pour essayer
+un échange, sélectionne Camille Moreau et ouvre le chat de `DEMO-1001`, son
+pull en taille S. Clique sur **Changer de taille**, choisis **Taille M** et
+confirme l’échange. Le stock est géré par article et par taille.
 
 La boutique utilise Mistral Large 4, le workflow SAV et PostgreSQL. Renseigne
 `MISTRAL_API_KEY` dans `.env` avant d’envoyer un message. Pour lancer
@@ -54,12 +65,28 @@ Si Chrome affiche « Failed to initialize Studio », ouvre les paramètres du
 site `smith.langchain.com`, autorise **Accès au réseau local**, puis recharge
 la page. [Dépannage Studio](https://docs.langchain.com/langsmith/troubleshooting-studio#chrome-connection-issues)
 
-Sélectionne le graphe `sav`.
-Dans le mode **Graph**, ouvre **Messages**, sélectionne **Human** et saisis
-« Mon pull est trop petit ». En mode JSON, l’entrée équivalente est la suivante.
+Sélectionne le graphe `sav`. En mode **Graph**, utilise cette entrée JSON.
 
 ```json
-{"messages": [{"type": "human", "content": "Mon pull est trop petit"}]}
+{
+  "active_order_count": 0,
+  "line_number": 1,
+  "messages": [{"type": "human", "content": "Mon pull est trop petit"}]
+}
+```
+
+Renseigne le contexte d’exécution avec les données de la commande de démo.
+
+```json
+{
+  "first_name": "Camille",
+  "order": {"id": "DEMO-1001", "status": "livree"},
+  "items": [
+    {"line_number": 1, "name": "Pull en laine côtelée", "color": "Vert mousse", "size": "S"},
+    {"line_number": 2, "name": "T-shirt en coton épais", "color": "Écru", "size": "XL"},
+    {"line_number": 3, "name": "Jupe en denim", "color": "Bleu brut", "size": "M"}
+  ]
+}
 ```
 
 À l’interruption `demander_taille`, saisis `Du M` dans le champ **Message**,
@@ -77,7 +104,18 @@ voir les messages envoyés au modèle, sa réponse et les compteurs de tokens.
 Après avoir modifié `.env`, relance `lancer_demo.bat` et effectue un nouvel
 échange depuis le chat. Dans **Tracing** sur LangSmith, ouvre le projet
 `agent-sav` et filtre sur le tag `boutique`. La demande et sa confirmation
-ont chacune une trace nommée `SAV boutique`, avec le même `case_id`.
+ont chacune une trace nommée `SAV boutique`, avec le même `thread_id`.
+Pour la boutique et la CLI, le format est `CLI-001:DEMO-1001:<uuid>`.
+Le backend décode le client et la commande depuis le fil. À l’appel du graphe,
+`context` fournit le prénom, la commande et ses articles. L’entrée
+`active_order_count` compte les autres commandes validées ou en livraison.
+Le numéro de ligne `line_number` indique l’article traité par le dossier.
+Le premier nœud `verifier_statut_commande` oriente une commande livrée vers
+`verifier_autres_commandes`, une commande en livraison vers
+`suivre_livraison` et une commande validée vers `informer_preparation`.
+Pour une commande livrée, le graphe enregistre s’il existe d’autres commandes
+en cours avant de passer à `comprendre`.
+Studio local utilise le client et la commande de démo avec ses UUID natifs.
 L’appel à Mistral apparaît sous `comprendre` dans la trace de la demande.
 Les nouveaux messages de la démo sont envoyés à LangSmith quand le
 traçage est activé.
@@ -93,16 +131,26 @@ docker compose up -d --wait
 .\.venv\Scripts\python.exe -m agent_sav init
 ```
 
+### Schémas PostgreSQL
+
+- `shop` contient les clients, les articles, les commandes, les lignes de commande (`sav_order_items`), le stock et les retours.
+- `langgraph` contient les checkpoints des threads de la boutique et de la CLI, leurs écritures, leurs blobs et les migrations du checkpointer.
+
+Le démarrage de la boutique et la commande `init` déplacent les tables SAV
+existantes de `public` vers ces deux schémas en conservant les données. Les
+deux schémas sont consultables dans Pgweb. Le serveur Studio local utilise
+son propre stockage de développement pour ses sessions.
+
 ## Démo de reprise sans clé API
 
 ```powershell
 .\.venv\Scripts\python.exe -m agent_sav ouvrir "Je veux retourner mon pull." --demo retour
 ```
 
-Copie la valeur de `case_id` dans `$dossier`. Chaque commande lance un nouveau processus.
+Copie la valeur de `thread_id` dans `$dossier`. Chaque commande lance un nouveau processus.
 
 ```powershell
-$dossier = 'COLLER-LE-CASE-ID'
+$dossier = 'COLLER-LE-THREAD-ID'
 .\.venv\Scripts\python.exe -m agent_sav decider $dossier oui --simuler-timeout
 .\.venv\Scripts\python.exe -m agent_sav reprendre $dossier
 .\.venv\Scripts\python.exe -m agent_sav statut $dossier
@@ -138,5 +186,6 @@ clarifier.
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Les tests de reprise utilisent le PostgreSQL local de Docker Compose et un LLM
-simulé.
+Les tests utilisent le PostgreSQL local de Docker Compose et un LLM simulé.
+Chaque test crée sa propre base. Avec `SAV_TEST_DATABASE_URL`, le rôle utilisé
+doit pouvoir créer des bases.
