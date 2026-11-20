@@ -9,6 +9,7 @@ const sendButton = document.querySelector("#send-chat");
 
 let opener = launcher;
 let waiting = false;
+let clarificationCaseId = null;
 
 function setPanel(open) {
   panel.hidden = !open;
@@ -78,11 +79,11 @@ function showResult(caseId, result) {
     }
     case "taille_a_preciser":
     case "taille_identique":
-      say(result.status === "taille_identique"
+      say(result.question ?? (result.status === "taille_identique"
         ? "Votre pull est déjà en taille S. Quelle autre taille souhaitez-vous ?"
-        : "Quelle taille souhaitez-vous pour l’échange ?");
+        : "Quelle taille souhaitez-vous pour l’échange ?"));
       showActions(["M", "L", "XL"].map((size) => [
-        `Taille ${size}`, () => submitMessage(`Je voudrais échanger mon pull contre un ${size}.`),
+        `Taille ${size}`, () => submitMessage(`Du ${size}`),
       ]));
       break;
     case "termine":
@@ -127,6 +128,9 @@ async function send(payload) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
     pending.remove();
+    clarificationCaseId = ["taille_a_preciser", "taille_identique"].includes(result.status)
+      ? payload.case_id
+      : null;
     const confirming = showResult(payload.case_id, result);
     setComposer(!confirming, confirming ? "Choisissez une réponse ci-dessus" : "Écrivez votre message…");
     if (!panel.hidden) (confirming ? actions.firstElementChild : input).focus({preventScroll: true});
@@ -142,10 +146,10 @@ async function send(payload) {
 
 function submitMessage(message) {
   if (waiting) return;
-  const caseId = crypto.randomUUID();
+  const caseId = clarificationCaseId ?? crypto.randomUUID();
   say(message, "client");
   input.value = "";
-  send({case_id: caseId, message});
+  send({case_id: caseId, message_id: crypto.randomUUID(), message});
 }
 
 function submitDecision(caseId, approved) {

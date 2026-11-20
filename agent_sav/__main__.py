@@ -29,6 +29,10 @@ def main() -> int:
     start.add_argument("--commande", default=DEMO_ORDER)
     start.add_argument("--demo", choices=["retour", "echange"], help="Utilise une intention simulée")
 
+    clarify = commands.add_parser("preciser", help="Répond à la question sur la taille")
+    clarify.add_argument("dossier", type=UUID)
+    clarify.add_argument("message")
+
     approval = commands.add_parser("decider", help="Répond à la demande d'accord")
     approval.add_argument("dossier", type=UUID)
     approval.add_argument("decision", choices=["oui", "non"])
@@ -60,13 +64,13 @@ def main() -> int:
                 print("Base SAV initialisée.")
                 return 0
 
-            def interpret(message: str) -> Intent:
+            def interpret(message: str, awaiting_size: bool) -> Intent:
                 demo = getattr(args, "demo", None)
                 if demo == "retour":
                     return Intent(action="retour", taille=None)
                 if demo == "echange":
                     return Intent(action="echange", taille="M")
-                return interpret_mistral(message)
+                return interpret_mistral(message, awaiting_size)
 
             graph = build_graph(
                 checkpointer, shop, interpret,
@@ -95,7 +99,11 @@ def main() -> int:
                     if not snapshot.values:
                         raise ValueError("Dossier SAV introuvable.")
 
-                    if args.command == "decider":
+                    if args.command == "preciser":
+                        if snapshot.next != ("demander_taille",) or not snapshot.interrupts:
+                            raise ValueError("Ce dossier n'attend pas de précision sur la taille.")
+                        graph.invoke(Command(resume={"message": args.message}), config, durability="sync")
+                    elif args.command == "decider":
                         if snapshot.next != ("attendre_accord",) or not snapshot.interrupts:
                             raise ValueError("Ce dossier n'attend pas d'accord.")
                         graph.invoke(Command(resume=args.decision == "oui"), config, durability="sync")
@@ -111,7 +119,8 @@ def main() -> int:
                 output["message"] = client_message(snapshot.values)
                 del output["messages"]
             if snapshot.interrupts:
-                output["confirmation"] = snapshot.interrupts[0].value
+                key = "clarification" if snapshot.next == ("demander_taille",) else "confirmation"
+                output[key] = snapshot.interrupts[0].value
             print(json.dumps(output, ensure_ascii=False, indent=2))
             return 0
     except LostResponse as error:

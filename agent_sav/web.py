@@ -10,7 +10,7 @@ from langgraph.types import Command
 
 from .model import interpret_demo, interpret_mistral
 from .shop import DEMO_ORDER, Shop
-from .workflow import build_graph
+from .workflow import awaits_size, build_graph
 
 PACKAGE = Path(__file__).resolve().parent
 INTERFACE = PACKAGE.parent / "interface"
@@ -64,10 +64,15 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                     raise ValueError
                 case_id = str(UUID(payload["case_id"]))
                 message = payload.get("message")
+                message_id = None
                 approved = payload.get("approved")
                 if "message" in payload:
                     if not isinstance(message, str) or not 0 < len(message.strip()) <= 1000:
                         raise ValueError
+                    if "message_id" in payload:
+                        if not isinstance(payload["message_id"], str):
+                            raise ValueError
+                        message_id = str(UUID(payload["message_id"]))
                 elif not isinstance(approved, bool):
                     raise ValueError
             except (ValueError, UnicodeError):
@@ -75,7 +80,7 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 return
 
             try:
-                state = self.run_case(case_id, message, approved)
+                state = self.run_case(case_id, message, message_id, approved)
             except Exception as error:
                 self.log_error("Échec du dossier SAV (%s)", type(error).__name__)
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
@@ -87,7 +92,9 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 return
             self.send_json(HTTPStatus.OK, state)
 
-        def run_case(self, case_id: str, message: str | None, approved: bool | None) -> dict:
+        def run_case(
+            self, case_id: str, message: str | None, message_id: str | None, approved: bool | None,
+        ) -> dict:
             config = {
                 "configurable": {"thread_id": case_id},
                 "run_name": "SAV boutique",
@@ -101,22 +108,35 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 lock.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (case_id,))
                 graph = build_graph(checkpointer, shop, interpret)
                 snapshot = graph.get_state(config)
-                if message is not None and not snapshot.values:
+                already_received = message_id is not None and any(
+                    item.id == message_id for item in snapshot.values.get("messages", [])
+                )
+                if snapshot.next and not snapshot.interrupts:
+                    graph.invoke(None, config, durability="sync")
+                elif message is None and snapshot.next == ("attendre_accord",) and snapshot.interrupts:
+                    graph.invoke(Command(resume=approved), config, durability="sync")
+                elif message is not None and not already_received and snapshot.next == ("demander_taille",):
+                    reply = {"message": message.strip()}
+                    if message_id is not None:
+                        reply["message_id"] = message_id
+                    graph.invoke(Command(resume=reply), config, durability="sync")
+                elif message is not None and not already_received and (
+                    not snapshot.values or (not snapshot.next and awaits_size(snapshot.values))
+                ):
                     graph.invoke(
                         {
                             "case_id": case_id,
-                            "order_id": DEMO_ORDER,
-                            "messages": [{"type": "human", "content": message.strip()}],
+                            "messages": [{"type": "human", "content": message.strip(), "id": message_id}],
                         },
                         config, durability="sync",
                     )
-                elif message is None and snapshot.next == ("attendre_accord",) and snapshot.interrupts:
-                    graph.invoke(Command(resume=approved), config, durability="sync")
-                elif snapshot.next and not snapshot.interrupts:
-                    graph.invoke(None, config, durability="sync")
 
-                state = graph.get_state(config).values
-                return {key: state[key] for key in ("status", "action", "size", "return_id") if key in state}
+                snapshot = graph.get_state(config)
+                state = snapshot.values
+                result = {key: state[key] for key in ("status", "action", "size", "return_id") if key in state}
+                if snapshot.next == ("demander_taille",) and snapshot.interrupts:
+                    result["question"] = snapshot.interrupts[0].value["question"]
+                return result
 
     with ThreadingHTTPServer(("127.0.0.1", port), BoutiqueHandler) as server:
         print(f"Boutique de démonstration : http://127.0.0.1:{server.server_port}", flush=True)

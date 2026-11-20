@@ -1,10 +1,11 @@
 from collections.abc import Callable
-from typing import Annotated, Literal, Required, TypedDict
+from typing import Annotated, Literal, NotRequired, Required, TypedDict
 from uuid import uuid4
 
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.types import interrupt
+from pydantic import StringConstraints
 
 from .model import Intent
 from .shop import DEMO_ORDER, OutOfStock, Shop
@@ -42,6 +43,11 @@ class State(InputState, total=False):
     message: str
 
 
+class SizeReply(TypedDict):
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    message_id: NotRequired[str]
+
+
 def client_message(state: State) -> str:
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
@@ -51,20 +57,28 @@ def client_message(state: State) -> str:
     raise ValueError("Ajoute un message Human pour lancer la demande SAV.")
 
 
+def awaits_size(state: State) -> bool:
+    return state.get("action") == "echange" and state.get("status") in {"taille_a_preciser", "taille_identique"}
+
+
 def build_graph(
     checkpointer,
     shop: Shop,
-    interpret: Callable[[str], Intent],
+    interpret: Callable[[str, bool], Intent],
     *,
     simulate_timeout: bool = False,
 ):
     def understand(state: State) -> State:
-        intent = interpret(client_message(state))
+        awaiting_size = awaits_size(state)
+        intent = interpret(client_message(state), awaiting_size)
+        action = intent.action
+        if action == "incertain" and awaiting_size:
+            action = state["action"]
         return {
             "case_id": state.get("case_id") or str(uuid4()),
             "order_id": state.get("order_id", DEMO_ORDER),
-            "action": intent.action,
-            "size": intent.taille if intent.action == "echange" else None,
+            "action": action,
+            "size": intent.taille if action == "echange" else None,
         }
 
     def check_eligibility(state: State) -> State:
@@ -77,6 +91,15 @@ def build_graph(
         if state["action"] == "echange" and state["size"] == "S":
             return {"status": "taille_identique"}
         return {"status": "accord_requis"}
+
+    def ask_size(state: State) -> State:
+        question = (
+            "Votre pull est déjà en taille S. Quelle autre taille souhaitez-vous ?"
+            if state["status"] == "taille_identique"
+            else "Quelle taille souhaitez-vous pour l’échange ?"
+        )
+        reply = interrupt({"question": question}, response_schema=SizeReply)
+        return {"messages": [HumanMessage(content=reply["message"], id=reply.get("message_id"))]}
 
     def wait_for_approval(state: State) -> State:
         approved = interrupt({
@@ -99,8 +122,12 @@ def build_graph(
 
         return {"status": "termine", "return_id": return_id}
 
-    def after_eligibility(state: State) -> Literal["attendre_accord", "__end__"]:
-        return "attendre_accord" if state["status"] == "accord_requis" else END
+    def after_eligibility(state: State) -> Literal["demander_taille", "attendre_accord", "__end__"]:
+        if awaits_size(state):
+            return "demander_taille"
+        if state["status"] == "accord_requis":
+            return "attendre_accord"
+        return END
 
     def after_approval(state: State) -> Literal["executer", "__end__"]:
         return "executer" if state["approved"] else END
@@ -108,11 +135,13 @@ def build_graph(
     builder = StateGraph(State, input_schema=InputState)
     builder.add_node("comprendre", understand)
     builder.add_node("verifier", check_eligibility)
+    builder.add_node("demander_taille", ask_size)
     builder.add_node("attendre_accord", wait_for_approval)
     builder.add_node("executer", execute)
     builder.add_edge(START, "comprendre")
     builder.add_edge("comprendre", "verifier")
     builder.add_conditional_edges("verifier", after_eligibility)
+    builder.add_edge("demander_taille", "comprendre")
     builder.add_conditional_edges("attendre_accord", after_approval)
     builder.add_edge("executer", END)
     return builder.compile(checkpointer=checkpointer)

@@ -24,9 +24,9 @@ docker compose up -d --wait
 ```
 
 Ouvre [Maison Orme](http://127.0.0.1:8000/) et clique sur **Besoin d’aide ?**
-en bas à droite. Essaie par exemple « Le pull est trop petit, je voudrais du M. »,
-puis confirme l’échange dans le chat. La commande fictive `DEMO-1001` contient
-un pull en taille S.
+en bas à droite. Écris « Mon pull est trop petit », puis réponds « Du M » quand
+l’agent demande la taille. Ensuite, confirme l’échange dans le chat. La commande
+fictive `DEMO-1001` contient un pull en taille S.
 
 La boutique utilise Mistral Large 4, le workflow SAV et PostgreSQL. Renseigne
 `MISTRAL_API_KEY` dans `.env` avant d’envoyer un message. Pour lancer
@@ -56,12 +56,15 @@ la page. [Dépannage Studio](https://docs.langchain.com/langsmith/troubleshootin
 
 Sélectionne le graphe `sav`.
 Dans le mode **Graph**, ouvre **Messages**, sélectionne **Human** et saisis
-« Le pull est trop petit, je voudrais du M. ». En mode JSON, l’entrée équivalente est la suivante.
+« Mon pull est trop petit ». En mode JSON, l’entrée équivalente est la suivante.
 
 ```json
-{"messages": [{"type": "human", "content": "Le pull est trop petit, je voudrais du M."}]}
+{"messages": [{"type": "human", "content": "Mon pull est trop petit"}]}
 ```
 
+À l’interruption `demander_taille`, saisis `Du M` dans le champ **Message**,
+ou `{"message": "Du M"}` dans l’éditeur JSON, puis clique sur **Resume**.
+Le graphe repasse par `comprendre` et `verifier` avec le même dossier.
 À l’interruption `attendre_accord`, reprends avec la valeur JSON `true`
 pour confirmer ou `false` pour annuler. Studio interprète les messages avec
 Mistral Large 4 et garde ses propres sessions. Un échange confirmé dans

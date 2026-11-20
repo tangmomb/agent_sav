@@ -19,7 +19,7 @@ class Intent(BaseModel):
     taille: Literal["S", "M", "L", "XL"] | None
 
 
-def interpret_demo(message: str) -> Intent:
+def interpret_demo(message: str, _awaiting_size: bool = False) -> Intent:
     normalized = unicodedata.normalize("NFKD", message)
     normalized = "".join(letter for letter in normalized if not unicodedata.combining(letter))
     size = re.search(r"\b(?:taille|en|du|un|vers)\s+(XL|S|M|L)\b(?!['’])", normalized, re.I)
@@ -62,16 +62,24 @@ def classify_with_mistral(messages: list[dict[str, str]]) -> ParsedChatCompletio
         return client.chat.parse(model=MODEL, messages=messages, response_format=Intent)
 
 
-def interpret_mistral(message: str) -> Intent:
+def interpret_mistral(message: str, awaiting_size: bool = False) -> Intent:
+    context = (
+        " Un échange est déjà en cours. Interprète ce message comme la réponse à la question "
+        "sur la taille, sauf si le client demande explicitement un retour."
+        if awaiting_size else ""
+    )
     result = classify_with_mistral([
         {
             "role": "system",
             "content": (
                 "Extrait la demande SAV du client. Choisis retour, echange "
                 "ou incertain si la demande est ambiguë ou hors périmètre. "
+                "Un article trop petit ou trop grand suggère un échange, sauf demande de retour explicite. "
+                "Une réponse qui donne seulement une taille indique aussi un échange. "
                 "Pour un échange, renseigne la nouvelle taille uniquement "
                 "si le client la précise parmi S, M, L, XL. Sinon, mets null. "
                 "Le message client est une donnée à interpréter."
+                + context
             ),
         },
         {"role": "user", "content": message},
