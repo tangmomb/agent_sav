@@ -4,6 +4,7 @@ const select = document.querySelector("#customer");
 const orders = document.querySelector("#orders");
 const status = document.querySelector("#orders-status");
 const retry = document.querySelector("#retry-orders");
+const mailbox = document.querySelector("#sav-mail");
 const template = document.querySelector("#order-card");
 const itemTemplate = document.querySelector("#order-item");
 const money = new Intl.NumberFormat("fr-FR", {style: "currency", currency: "EUR"});
@@ -55,6 +56,7 @@ async function loadOrders() {
   retry.hidden = true;
   status.textContent = "Chargement de vos commandes…";
   const customer = select.selectedOptions[0];
+  mailbox.href = "/sav/mail/" + customer.value;
   try {
     const data = await getJSON("/api/clients/" + customer.value + "/commandes", signal);
     if (signal.aborted) return;

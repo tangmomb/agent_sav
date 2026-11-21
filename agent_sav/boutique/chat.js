@@ -1,7 +1,6 @@
 const panel = document.querySelector("#chat-panel");
 const closeButton = document.querySelector("#close-chat");
 const heading = document.querySelector("#chat-order");
-const itemPicker = document.querySelector("#chat-product");
 const form = document.querySelector("#chat-form");
 const input = document.querySelector("#chat-input");
 const sendButton = document.querySelector("#send-chat");
@@ -9,7 +8,6 @@ let log = document.querySelector("#chat-log");
 let actions = document.querySelector("#chat-actions");
 
 const conversations = new Map();
-const selectedItems = new Map();
 const sizes = ["S", "M", "L", "XL"];
 let active;
 let opener;
@@ -24,28 +22,11 @@ export function openChat(order, customer, button) {
   opener = button;
   opener.setAttribute("aria-expanded", "true");
   panel.hidden = false;
-  itemPicker.parentElement.hidden = order.items.length === 1;
-  itemPicker.replaceChildren(...order.items.map((item) => new Option(
-    item.line_number + ". " + [item.name, item.color, item.size].filter(Boolean).join(" · "),
-    item.line_number,
-  )));
-  const orderKey = order.customer_id + "/" + order.id;
-  itemPicker.value = selectedItems.get(orderKey) ?? order.items[0].line_number;
-  selectItem(order);
-  if (order.items.length > 1) itemPicker.focus({preventScroll: true});
-  else focusChat(active);
-}
-
-function selectItem(order) {
-  const item = order.items.find(({line_number}) => line_number === Number(itemPicker.value));
-  const orderKey = order.customer_id + "/" + order.id;
-  selectedItems.set(orderKey, item.line_number);
-  const key = orderKey + "/" + item.line_number;
+  const key = order.customer_id + "/" + order.id;
   const firstVisit = !conversations.has(key);
   if (firstVisit) {
     const chat = {
       order,
-      item,
       log: log.cloneNode(false),
       actions: actions.cloneNode(false),
       threadId: newThreadId(order),
@@ -63,13 +44,12 @@ function selectItem(order) {
   updateComposer(active);
   log.scrollTop = log.scrollHeight;
   if (firstVisit) send(active, {thread_id: active.threadId, open: true});
+  else focusChat(active);
 }
 
 function newThreadId(order) {
   return order.customer_id + ":" + order.id + ":" + crypto.randomUUID();
 }
-
-itemPicker.addEventListener("change", () => selectItem(active.order));
 
 export function closeChat(restoreFocus = true) {
   panel.hidden = true;
@@ -106,46 +86,59 @@ function showActions(chat, options) {
 }
 
 function offerRequests(chat) {
-  const options = [["Retourner mon article", () => submitMessage(chat, "Je voudrais retourner mon article.")]];
-  if (chat.item.sized) {
-    options.unshift(["Changer de taille", () => submitMessage(chat, "Je voudrais échanger mon article.")]);
+  if (chat.order.status !== "livree") {
+    say(chat, "Les retours et échanges sont disponibles après la livraison.");
+    return;
   }
-  showActions(chat, options);
+  showActions(chat, [
+    ["Échanger un article", () => submitMessage(chat, "Je voudrais échanger un article.")],
+    ["Retourner un article", () => submitMessage(chat, "Je voudrais retourner un article.")],
+  ]);
 }
 
 function showResult(chat, threadId, result) {
-  const {item} = chat;
   switch (result.status) {
-    case "accord_requis":
-      say(chat, result.action === "echange"
-        ? "Je peux échanger l’article « " + item.name + " » (taille " + item.size + ") contre une taille " + result.size + ". Vous confirmez ?"
-        : "Je peux enregistrer le retour de l’article « " + item.name + " ». Vous confirmez ?");
-      showActions(chat, [
-        ["Oui, je confirme", () => submitDecision(chat, threadId, true)],
-        ["Non, annuler", () => submitDecision(chat, threadId, false)],
-      ]);
+    case "article_a_preciser":
+      say(chat, result.question);
+      showActions(chat, result.articles.map((article) => {
+        const label = [article.name, article.color, article.size].filter(Boolean).join(" · ");
+        return [label, () => {
+          say(chat, label, "client");
+          send(chat, {thread_id: threadId, article: article.line_number});
+        }];
+      }));
       return true;
     case "taille_a_preciser":
     case "taille_identique":
-      say(chat, result.question);
-      showActions(chat, sizes.filter((size) => size !== item.size).map((size) => [
-        "Taille " + size, () => submitMessage(chat, "Du " + size),
-      ]));
-      return false;
-    case "termine":
-      say(chat, result.action === "echange"
-        ? "Votre échange est enregistré et la taille " + result.size + " est réservée. Référence " + result.return_id + "."
-        : "Votre retour est enregistré. Référence " + result.return_id + ".");
-      break;
-    case "annule":
-      say(chat, "D’accord, j’ai annulé votre demande.");
-      break;
-    case "stock_indisponible":
-      say(chat, "Cet article est épuisé en taille " + result.size + ". Vous pouvez demander une autre taille ou un retour.");
-      break;
     case "article_sans_taille":
-      say(chat, "Cet article est proposé en taille unique. Je peux vous aider à le retourner.");
+    case "coloris_inconnu": {
+      say(chat, result.question);
+      const sizeOptions = result.ordered_size ? sizes.filter((size) => size !== result.ordered_size).map((size) => [
+        "Taille " + size, () => submitMessage(chat, "Du " + size),
+      ]) : [];
+      showActions(chat, [...sizeOptions, ...result.coloris.map((color) => [
+        color, () => submitMessage(chat, "En coloris " + color),
+      ])]);
+      return false;
+    }
+    case "attente_boutique":
+    case "attente_client":
+    case "refuse_boutique":
+    case "termine":
+    case "annule": {
+      const message = say(chat, result.status === "attente_boutique"
+        ? result.message_client
+        : "Vous pouvez consulter le suivi dans la boîte mail de démonstration.");
+      const mailbox = document.createElement("a");
+      mailbox.href = "/sav/mail/" + chat.order.customer_id;
+      mailbox.textContent = "Ouvrir ma boîte mail";
+      message.append(document.createElement("br"), mailbox);
       break;
+    }
+    case "stock_indisponible":
+      say(chat, result.message_client);
+      showActions(chat, [["Retourner cet article", () => submitMessage(chat, "Je voudrais retourner cet article.", result.line_number)]]);
+      return false;
     case "commande_en_transit":
       say(chat, "Votre commande est en cours de livraison. Vous pourrez demander un retour ou un échange une fois reçue.");
       return false;
@@ -182,10 +175,7 @@ async function send(chat, payload) {
     const response = await fetch("/api/sav", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        ...payload,
-        line_number: chat.item.line_number,
-      }),
+      body: JSON.stringify(payload),
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error);
@@ -193,11 +183,13 @@ async function send(chat, payload) {
     chat.failed = false;
     if (payload.open) {
       say(chat, result.greeting);
+      if (chat.order.status === "livree") say(chat, "Souhaitez-vous échanger ou retourner un article ?");
       offerRequests(chat);
       chat.log.scrollTop = 0;
     } else {
       chat.confirming = showResult(chat, payload.thread_id, result);
-      const awaitingReply = ["taille_a_preciser", "taille_identique", "accord_requis"].includes(result.status);
+      const awaitingReply = ["demande_a_clarifier", "taille_a_preciser", "taille_identique",
+        "coloris_inconnu", "article_a_preciser", "article_sans_taille"].includes(result.status);
       chat.threadId = awaitingReply ? payload.thread_id : undefined;
     }
     chat.placeholder = chat.confirming ? "Choisissez une réponse ci-dessus" : "Écrivez votre message…";
@@ -209,26 +201,19 @@ async function send(chat, payload) {
   } finally {
     chat.waiting = false;
     updateComposer(chat);
-    if (document.activeElement !== itemPicker &&
-        (panel.contains(document.activeElement) || document.activeElement === document.body)) {
+    if (panel.contains(document.activeElement) || document.activeElement === document.body) {
       focusChat(chat);
     }
   }
 }
 
-function submitMessage(chat, message) {
+function submitMessage(chat, message, lineNumber) {
   if (chat.waiting) return;
   const threadId = chat.threadId ?? newThreadId(chat.order);
   say(chat, message, "client");
   chat.draft = "";
   if (chat === active) input.value = "";
-  send(chat, {thread_id: threadId, message_id: crypto.randomUUID(), message});
-}
-
-function submitDecision(chat, threadId, approved) {
-  if (chat.waiting) return;
-  say(chat, approved ? "Oui, je confirme." : "Non, j’annule.", "client");
-  send(chat, {thread_id: threadId, approved});
+  send(chat, {thread_id: threadId, message_id: crypto.randomUUID(), message, line_number: lineNumber});
 }
 
 input.addEventListener("input", () => { active.draft = input.value; });

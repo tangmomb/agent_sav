@@ -1,4 +1,6 @@
-from typing import Literal, TypedDict
+import hmac
+from secrets import token_hex
+from typing import Literal, NotRequired, TypedDict
 from uuid import uuid4
 
 import psycopg
@@ -28,6 +30,7 @@ class OrderArticle(TypedDict):
 
 
 class OrderContext(TypedDict):
+    customer_id: NotRequired[str]
     first_name: str
     order: OrderSummary
     items: list[OrderArticle]
@@ -138,6 +141,39 @@ class Shop:
                             REFERENCES shop.sav_order_items (order_id, line_number);
                     END IF;
                 END $$;
+                ALTER TABLE shop.sav_returns ADD COLUMN IF NOT EXISTS color text;
+                CREATE TABLE IF NOT EXISTS shop.sav_color_stock (
+                    product_id text NOT NULL REFERENCES shop.sav_products,
+                    size text NOT NULL,
+                    color text NOT NULL,
+                    quantity integer NOT NULL CHECK (quantity >= 0),
+                    PRIMARY KEY (product_id, size, color)
+                );
+                INSERT INTO shop.sav_color_stock (product_id, size, color, quantity)
+                SELECT p.id, sizes.size, CASE WHEN p.color = 'Noir' THEN 'Blanc' ELSE 'Noir' END, 10
+                FROM shop.sav_products p CROSS JOIN (VALUES (''), ('S'), ('M'), ('L'), ('XL')) sizes(size)
+                WHERE p.sized = (sizes.size <> '') ON CONFLICT DO NOTHING;
+                CREATE TABLE IF NOT EXISTS shop.sav_requests (
+                    case_id uuid PRIMARY KEY,
+                    thread_id text NOT NULL UNIQUE,
+                    customer_id text NOT NULL REFERENCES shop.sav_customers,
+                    order_id text NOT NULL,
+                    line_number integer NOT NULL,
+                    action text NOT NULL,
+                    size text,
+                    color text,
+                    status text NOT NULL DEFAULT 'attente_boutique',
+                    secret text NOT NULL,
+                    FOREIGN KEY (order_id, line_number) REFERENCES shop.sav_order_items (order_id, line_number)
+                );
+                CREATE TABLE IF NOT EXISTS shop.sav_messages (
+                    case_id uuid NOT NULL REFERENCES shop.sav_requests,
+                    kind text NOT NULL,
+                    subject text NOT NULL,
+                    body text NOT NULL,
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    PRIMARY KEY (case_id, kind)
+                );
             """)
 
     def customers(self) -> list[dict]:
@@ -181,6 +217,7 @@ class Shop:
             return None
 
         context: OrderContext = {
+            "customer_id": customer_id,
             "first_name": row[0].split()[0],
             "order": {"id": order["id"], "status": order["status"]},
             "items": [
@@ -197,51 +234,161 @@ class Shop:
     def order_item(self, customer_id: str, order_id: str, line_number: int) -> dict | None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute(
-                "SELECT o.status, i.size, p.sized " + ORDER_ITEM,
+                "SELECT o.status, i.size, p.sized, p.color, p.id AS product_id " + ORDER_ITEM,
                 (customer_id, order_id, line_number),
             ).fetchone()
 
-    def create_return(
-        self, case_id: str, order_id: str, action: str, size: str | None, *,
-        customer_id: str = DEMO_CUSTOMER, line_number: int = 1,
-    ) -> tuple[str, bool]:
-        """Retourne la référence et indique si cet appel a créé le retour."""
-        return_id = f"RET-{uuid4().hex[:12].upper()}"
+    def variants(self, product_id: str) -> list[str]:
         with psycopg.connect(self.dsn) as conn:
-            order = conn.execute(
-                "SELECT i.product_id " + ORDER_ITEM, (customer_id, order_id, line_number),
+            return [row[0] for row in conn.execute(
+                "SELECT DISTINCT color FROM shop.sav_color_stock WHERE product_id = %s ORDER BY color", (product_id,),
+            )]
+
+    @staticmethod
+    def stock_location(product_id, size, color, original_color):
+        if color == original_color:
+            return "shop.sav_stock", "product_id = %s AND size = %s", (product_id, size)
+        return "shop.sav_color_stock", "product_id = %s AND size = %s AND color = %s", (product_id, size or "", color)
+
+    @staticmethod
+    def insert_request(conn, state: dict, thread_id: str, status: str) -> bool:
+        return conn.execute("""
+            INSERT INTO shop.sav_requests (case_id, thread_id, customer_id, order_id, line_number, action, size, color, secret, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (case_id) DO NOTHING
+        """, (state["case_id"], thread_id, state["customer_id"], state["order_id"], state["line_number"],
+              state["action"], state["size"], state["color"], token_hex(32), status)).rowcount == 1
+
+    @staticmethod
+    def delivered_item(conn, state: dict) -> dict:
+        item = conn.execute(
+            "SELECT o.status, p.id AS product_id, p.color " + ORDER_ITEM,
+            (state["customer_id"], state["order_id"], state["line_number"]),
+        ).fetchone()
+        if item is None or item["status"] != "livree":
+            raise ValueError("Article livré introuvable.")
+        return item
+
+    def reserve_exchange(self, state: dict, thread_id: str) -> None:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            item = self.delivered_item(conn, state)
+            if not self.insert_request(conn, state, thread_id, "stock_reserve"):
+                return
+            table, where, params = self.stock_location(item["product_id"], state["size"], state["color"], item["color"])
+            reserved = conn.execute(f"UPDATE {table} SET quantity = quantity - 1 WHERE {where} AND quantity > 0", params)
+            if not reserved.rowcount:
+                raise OutOfStock(state["size"])
+
+    def register_request(self, state: dict, thread_id: str) -> None:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            if state["action"] == "retour":
+                self.delivered_item(conn, state)
+                self.insert_request(conn, state, thread_id, "attente_boutique")
+                return
+            request = conn.execute("""
+                UPDATE shop.sav_requests
+                SET status = CASE WHEN status = 'stock_reserve' THEN 'attente_boutique' ELSE status END
+                WHERE case_id = %s AND thread_id = %s AND action = 'echange'
+            """, (state["case_id"], thread_id))
+            if not request.rowcount:
+                raise ValueError("Réservation de stock introuvable.")
+
+    @staticmethod
+    def record_message(conn, case_id: str, kind: str, subject: str, body: str) -> None:
+        conn.execute("""
+            INSERT INTO shop.sav_messages (case_id, kind, subject, body) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (case_id, kind) DO NOTHING
+        """, (case_id, kind, subject, body))
+
+    def notify_shop(self, case_id: str) -> None:
+        with psycopg.connect(self.dsn) as conn:
+            self.record_message(conn, case_id, "boutique", "Demande SAV à traiter", "Une demande attend votre décision.")
+
+    def finish_step(self, case_id: str, status: str, reason: str = "") -> tuple[str | None, bool]:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            request = conn.execute("""
+                SELECT r.*, i.product_id, p.color AS original_color, p.name AS item_name
+                FROM shop.sav_requests r JOIN shop.sav_order_items i USING (order_id, line_number)
+                JOIN shop.sav_products p ON p.id = i.product_id WHERE r.case_id = %s FOR UPDATE OF r
+            """, (case_id,)).fetchone()
+            if request is None:
+                raise ValueError("Demande SAV introuvable.")
+            if request["status"] == status:
+                if status == "termine":
+                    row = conn.execute("SELECT id FROM shop.sav_returns WHERE case_id = %s", (case_id,)).fetchone()
+                    return row["id"], False
+                return None, False
+
+            expected = "attente_boutique" if status in {"refuse_boutique", "attente_client"} else "attente_client"
+            if request["status"] != expected:
+                raise ValueError("Cette étape du dossier est déjà close.")
+            conn.execute("UPDATE shop.sav_requests SET status = %s WHERE case_id = %s", (status, case_id))
+            if status in {"refuse_boutique", "annule"} and request["action"] == "echange":
+                table, where, params = self.stock_location(
+                    request["product_id"], request["size"], request["color"], request["original_color"],
+                )
+                conn.execute(f"UPDATE {table} SET quantity = quantity + 1 WHERE {where}", params)
+
+            detail = f"Commande {request['order_id']} · {request['action']} · {request['item_name']}"
+            if request["color"]:
+                detail += f" · {request['color']}"
+            if request["size"]:
+                detail += f" · taille {request['size']}"
+            if status == "refuse_boutique":
+                self.record_message(conn, case_id, "refus", "Demande SAV refusée", f"{detail}\nMotif : {reason}")
+            if status == "attente_client":
+                self.record_message(conn, case_id, "confirmation", "Confirmez votre demande SAV", detail)
+            if status == "termine":
+                return_id = f"RET-{uuid4().hex[:12].upper()}"
+                conn.execute("""
+                    INSERT INTO shop.sav_returns (case_id, id, order_id, line_number, action, size, color)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (case_id, return_id, request["order_id"], request["line_number"], request["action"],
+                      request["size"], request["color"]))
+                self.record_message(conn, case_id, "recapitulatif", "Récapitulatif de votre demande SAV", f"{detail}\nRéférence : {return_id}")
+                return return_id, True
+        return None, False
+
+    def requests_for_shop(self) -> list[dict]:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            return conn.execute("""
+                SELECT r.case_id::text, r.customer_id, r.order_id, r.action, r.size, r.color, p.name
+                FROM shop.sav_requests r JOIN shop.sav_messages m ON m.case_id = r.case_id AND m.kind = 'boutique'
+                JOIN shop.sav_order_items i USING (order_id, line_number)
+                JOIN shop.sav_products p ON p.id = i.product_id
+                WHERE r.status = 'attente_boutique' AND strpos(r.thread_id, ':') > 0 ORDER BY m.created_at
+            """).fetchall()
+
+    def request_thread(self, case_id: str, decision: str | None = None, signature: str = "") -> str | None:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            request = conn.execute(
+                "SELECT thread_id, secret FROM shop.sav_requests WHERE case_id = %s AND status <> 'stock_reserve'",
+                (case_id,),
             ).fetchone()
-            if order is None:
-                raise ValueError("Article introuvable dans cette commande.")
-            inserted = conn.execute(
-                """
-                INSERT INTO shop.sav_returns (case_id, id, order_id, line_number, action, size)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (case_id) DO NOTHING
-                RETURNING id
-                """,
-                (case_id, return_id, order_id, line_number, action, size),
-            ).fetchone()
+        if request and (decision is None or hmac.compare_digest(
+            signature, self.sign_decision(request["secret"], case_id, decision),
+        )):
+            return request["thread_id"]
+        return None
 
-            if inserted is None:
-                existing = conn.execute(
-                    "SELECT id, order_id, line_number, action, size FROM shop.sav_returns WHERE case_id = %s",
-                    (case_id,),
-                ).fetchone()
-                if existing is None or existing[1:] != (order_id, line_number, action, size):
-                    raise ValueError("La clé d'idempotence correspond à une autre opération.")
-                return existing[0], False
+    @staticmethod
+    def sign_decision(secret: str, case_id: str, decision: str) -> str:
+        return hmac.digest(bytes.fromhex(secret), f"{case_id}:{decision}".encode(), "sha256").hex()
 
-            if action == "echange":
-                reserved = conn.execute(
-                    """
-                    UPDATE shop.sav_stock SET quantity = quantity - 1
-                    WHERE product_id = %s AND size = %s AND quantity > 0
-                    RETURNING size
-                    """,
-                    (order[0], size),
-                ).fetchone()
-                if reserved is None:
-                    raise OutOfStock(size)
-
-        return return_id, True
+    def mailbox(self, customer_id: str) -> list[dict]:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            messages = conn.execute("""
+                SELECT r.case_id::text, r.secret, r.status, m.kind, m.subject, m.body
+                FROM shop.sav_messages m JOIN shop.sav_requests r USING (case_id)
+                WHERE r.customer_id = %s AND m.kind <> 'boutique'
+                    AND strpos(r.thread_id, ':') > 0
+                ORDER BY m.created_at DESC
+            """, (customer_id,)).fetchall()
+        for message in messages:
+            secret = message.pop("secret")
+            case_id = message.pop("case_id")
+            if message.pop("status") == "attente_client" and message["kind"] == "confirmation":
+                message["links"] = {
+                    decision: f"/sav/reponse/{case_id}/{decision}/{self.sign_decision(secret, case_id, decision)}"
+                    for decision in ("confirmer", "refuser")
+                }
+        return messages

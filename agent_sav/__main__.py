@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 from uuid import UUID, uuid4
 
@@ -10,7 +11,7 @@ from langgraph.types import Command
 
 from .database import initialize_database, open_checkpointer
 from .demo_data import DEMO_CUSTOMER, DEMO_ORDER
-from .model import Intent, interpret_mistral
+from .model import Intent, interpret_demo, interpret_mistral
 from .shop import DEFAULT_DSN, Shop
 from .thread_id import order_thread
 from .workflow import LostResponse, build_graph, client_message
@@ -40,17 +41,26 @@ def main() -> int:
     start.add_argument("message")
     start.add_argument("--client", default=DEMO_CUSTOMER)
     start.add_argument("--commande", default=DEMO_ORDER)
-    start.add_argument("--ligne", type=int, default=1, help="Numéro de l’article dans la commande")
+    start.add_argument("--ligne", type=int, help="Numéro de l’article dans la commande")
     start.add_argument("--demo", choices=["retour", "echange"], help="Utilise une intention simulée")
 
-    clarify = commands.add_parser("preciser", help="Répond à la question sur la taille")
+    article = commands.add_parser("article", help="Choisit un article dans la commande")
+    article.add_argument("dossier", type=parse_thread)
+    article.add_argument("ligne", type=int)
+
+    clarify = commands.add_parser("preciser", help="Précise le type de demande ou la variante")
     clarify.add_argument("dossier", type=parse_thread)
     clarify.add_argument("message")
+    clarify.add_argument("--demo", action="store_true", help="Utilise des règles sans clé API")
 
-    approval = commands.add_parser("decider", help="Répond à la demande d'accord")
+    approval = commands.add_parser("decider", help="Enregistre la décision de la boutique")
     approval.add_argument("dossier", type=parse_thread)
     approval.add_argument("decision", choices=["oui", "non"])
-    approval.add_argument("--simuler-timeout", action="store_true")
+    approval.add_argument("--motif")
+
+    reply = commands.add_parser("repondre", help="Répond en utilisant le lien signé du mail")
+    reply.add_argument("lien")
+    reply.add_argument("--simuler-timeout", action="store_true")
 
     for name, help_text in (
         ("reprendre", "Rejoue une exécution interrompue"),
@@ -75,13 +85,23 @@ def main() -> int:
             return 0
 
         shop = Shop(dsn)
+        if args.command == "repondre":
+            from .web import SIGNED_REPLY
+
+            match = re.fullmatch(SIGNED_REPLY, args.lien)
+            args.dossier = shop.request_thread(*match.groups()) if match else None
+            if not args.dossier:
+                raise ValueError("Lien de réponse invalide.")
+
         with open_checkpointer(dsn) as checkpointer:
             def interpret(message: str, awaiting_size: bool) -> Intent:
                 demo = getattr(args, "demo", None)
                 if demo == "retour":
-                    return Intent(action="retour", taille=None)
+                    return Intent(action="retour", taille=None, coloris=None)
                 if demo == "echange":
-                    return Intent(action="echange", taille="M")
+                    return Intent(action="echange", taille="M", coloris=None)
+                if args.command == "preciser" and demo:
+                    return interpret_demo(message, awaiting_size)
                 return interpret_mistral(message, awaiting_size)
 
             graph = build_graph(
@@ -93,18 +113,24 @@ def main() -> int:
                 thread_id = f"{args.client}:{args.commande}:{uuid4()}"
                 order_thread(thread_id)
                 config = {"configurable": {"thread_id": thread_id}}
-                if not 0 < args.ligne <= 2**31 - 1:
+                if args.ligne is not None and not 0 < args.ligne <= 2**31 - 1:
                     raise ValueError("Le numéro de ligne est invalide.")
                 prepared = shop.order_context(args.client, args.commande)
                 if prepared is None:
                     raise ValueError("Commande introuvable pour ce client.")
-                context, count = prepared
+                context, _ = prepared
+                if args.ligne is not None and not any(item["line_number"] == args.ligne for item in context["items"]):
+                    raise ValueError("Cet article ne fait pas partie de la commande.")
+                status = context["order"]["status"]
+                if status != "livree":
+                    result = "commande_en_transit" if status == "en_livraison" else "commande_validee"
+                    print(json.dumps({"thread_id": thread_id, "status": result}, ensure_ascii=False, indent=2))
+                    return 0
+                entry = {"messages": [{"type": "human", "content": args.message}]}
+                if args.ligne is not None:
+                    entry["line_number"] = args.ligne
                 graph.invoke(
-                    {
-                        "line_number": args.ligne,
-                        "active_order_count": count,
-                        "messages": [{"type": "human", "content": args.message}],
-                    },
+                    entry,
                     config,
                     context=context,
                     durability="sync",
@@ -119,18 +145,40 @@ def main() -> int:
                     if not snapshot.values:
                         raise ValueError("Dossier SAV introuvable.")
 
-                    if args.command == "preciser":
-                        if snapshot.next != ("demander_taille",) or not snapshot.interrupts:
-                            raise ValueError("Ce dossier n'attend pas de précision sur la taille.")
-                        graph.invoke(Command(resume={"message": args.message}), config, durability="sync")
+                    if args.command == "article":
+                        if snapshot.next != ("choisir_article",) or not snapshot.interrupts:
+                            raise ValueError("Ce dossier n’attend pas de choix d’article.")
+                        if not any(item["line_number"] == args.ligne for item in snapshot.values["items"]):
+                            raise ValueError("Cet article ne fait pas partie de la commande.")
+                        graph.invoke(Command(resume={"line_number": args.ligne}), config, durability="sync")
+                    elif args.command == "preciser":
+                        if snapshot.next not in {("choisir_action",), ("demander_taille",)} or not snapshot.interrupts:
+                            raise ValueError("Ce dossier n’attend pas de précision.")
+                        context = None
+                        if snapshot.next == ("choisir_action",):
+                            prepared = shop.order_context(*order_thread(thread_id))
+                            if prepared is None:
+                                raise ValueError("Commande introuvable pour ce client.")
+                            context, _ = prepared
+                        graph.invoke(Command(resume={"message": args.message}), config, context=context, durability="sync")
                     elif args.command == "decider":
-                        if snapshot.next != ("attendre_accord",) or not snapshot.interrupts:
-                            raise ValueError("Ce dossier n'attend pas d'accord.")
-                        graph.invoke(Command(resume=args.decision == "oui"), config, durability="sync")
+                        if snapshot.next != ("attendre_validation_boutique",) or not snapshot.interrupts:
+                            raise ValueError("Ce dossier n’attend pas la décision de la boutique.")
+                        reason = (args.motif or "").strip()
+                        if args.decision == "non" and not 0 < len(reason) <= 1000:
+                            raise ValueError("Indiquez un motif avec --motif.")
+                        graph.invoke(Command(resume={"approved": args.decision == "oui", "reason": reason}), config, durability="sync")
+                    elif args.command == "repondre":
+                        if snapshot.next != ("attendre_confirmation_client",) or not snapshot.interrupts:
+                            raise ValueError("Ce dossier n’attend pas la réponse du client.")
+                        graph.invoke(Command(resume=match[2] == "confirmer"), config, durability="sync")
                     elif args.command == "reprendre":
-                        if snapshot.next != ("executer",):
+                        if not snapshot.next or snapshot.interrupts:
                             raise ValueError("Ce dossier n'a pas d'exécution à reprendre.")
-                        graph.invoke(None, config, durability="sync")
+                        context = None
+                        if snapshot.next == ("choisir_action",):
+                            context, _ = shop.order_context(*order_thread(thread_id))
+                        graph.invoke(None, config, context=context, durability="sync")
 
                     snapshot = graph.get_state(config)
 
@@ -139,8 +187,12 @@ def main() -> int:
                 output["message"] = client_message(snapshot.values)
             output.pop("messages", None)
             if snapshot.interrupts:
-                key = "clarification" if snapshot.next == ("demander_taille",) else "confirmation"
-                output[key] = snapshot.interrupts[0].value
+                output["interruption"] = {key: val for key, val in snapshot.interrupts[0].value.items() if key != "_message_ids"}
+            if output.get("status") == "attente_client":
+                for mail in shop.mailbox(output["customer_id"]):
+                    if mail.get("links", {}).get("confirmer", "").startswith(f"/sav/reponse/{output['case_id']}/"):
+                        output["liens_mail"] = mail["links"]
+                        break
             print(json.dumps(output, ensure_ascii=False, indent=2))
             return 0
     except LostResponse as error:

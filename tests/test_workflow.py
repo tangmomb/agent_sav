@@ -1,10 +1,14 @@
 import json
 import os
+import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from queue import Queue
-from threading import Thread
+from threading import Barrier, Thread
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -46,44 +50,6 @@ def cli(database: str, *args: str, code: int = 0) -> str:
     return result.stdout
 
 
-def test_exchange_resumes_after_commit_without_duplicate(database):
-    cli(database, "init")
-    opened = json.loads(cli(database, "ouvrir", "Le pull est trop petit, je voudrais du M.", "--demo", "echange"))
-    thread_id = opened["thread_id"]
-    assert opened["status"] == "accord_requis"
-    assert opened["confirmation"]["taille"] == "M"
-
-    with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
-
-    cli(database, "decider", thread_id, "oui", "--simuler-timeout", code=2)
-    with psycopg.connect(database) as db:
-        (return_id,) = db.execute("SELECT id FROM shop.sav_returns").fetchone()
-
-    resumed = json.loads(cli(database, "reprendre", thread_id))
-    assert resumed["status"] == "termine"
-    assert resumed["return_id"] == return_id
-    cli(database, "decider", thread_id, "oui", code=1)
-
-    with psycopg.connect(database) as db:
-        assert db.execute("SELECT id FROM shop.sav_returns").fetchall() == [(return_id,)]
-        assert db.execute(
-            "SELECT quantity FROM shop.sav_stock WHERE product_id = 'ART-001' AND size = 'M'"
-        ).fetchone() == (19,)
-
-
-def test_stock_can_change_while_waiting_for_approval(database):
-    cli(database, "init")
-    opened = json.loads(cli(database, "ouvrir", "Le pull est trop petit, je voudrais du M.", "--demo", "echange"))
-    with psycopg.connect(database) as db:
-        db.execute("UPDATE shop.sav_stock SET quantity = 0 WHERE product_id = 'ART-001' AND size = 'M'")
-
-    result = json.loads(cli(database, "decider", opened["thread_id"], "oui"))
-    assert result["status"] == "stock_indisponible"
-    with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
-
-
 @pytest.fixture
 def boutique(database, monkeypatch):
     servers = Queue()
@@ -115,92 +81,251 @@ def send_to_sav(boutique, **payload):
         return json.load(response)
 
 
-@pytest.mark.parametrize(("status", "count", "branch", "result"), [
-    ("livree", 0, "verifier_autres_commandes", "demande_a_clarifier"),
-    ("livree", 2, "verifier_autres_commandes", "demande_a_clarifier"),
-    ("en_livraison", 2, "suivre_livraison", "commande_en_transit"),
-    ("validee", 2, "informer_preparation", "commande_validee"),
-])
-def test_graph_routes_by_order_status_before_interpretation(monkeypatch, status, count, branch, result):
-    shop = Shop("invalid-dsn")
 
-    def interpret(message, awaiting_size):
-        assert status == "livree"
-        return interpret_demo(message, awaiting_size)
-
-    def lookup(*_args):
-        assert status == "livree"
-        return {"status": "livree", "size": "L", "sized": True}
-
-    monkeypatch.setattr(shop, "order_item", lookup)
-    graph = build_graph(None, shop, interpret)
-    updates = list(graph.stream(
-        {"active_order_count": count, "messages": [{"type": "human", "content": "Où en est ma commande ?"}]},
-        {"configurable": {"thread_id": f"CLI-003:DEMO-1015:{uuid4()}"}},
-        context={
-            "first_name": "Inès",
-            "order": {"id": "DEMO-1015", "status": status},
-            "items": [{"line_number": 1, "name": "Jean droit", "color": "Indigo", "size": "L"}],
-        },
-        stream_mode="updates",
-    ))
-    assert [next(iter(update)) for update in updates[:2]] == ["verifier_statut_commande", branch]
-    if status == "livree":
-        assert updates[1][branch]["has_other_active_orders"] == (count > 0)
-        assert "comprendre" in updates[2]
-    assert next(iter(updates[-1].values()))["status"] == result
+def post_form(boutique, route, **form):
+    request = Request(
+        boutique + route,
+        data=urlencode(form).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urlopen(request, timeout=10) as response:
+        return response.read().decode()
 
 
-def test_boutique_clarifies_size_on_the_same_case(database, boutique):
-    thread_id = f"CLI-001:DEMO-1001:{uuid4()}"
+def get_page(boutique, route):
+    with urlopen(boutique + route, timeout=10) as response:
+        return response.read().decode()
 
-    def send(**payload):
-        return send_to_sav(boutique, thread_id=thread_id, **payload)
 
-    opened = send(open=True)
-    assert "Bonjour Camille !" in opened["greeting"]
-    assert "DEMO-1001 est livrée" in opened["greeting"]
-    assert "Pull en laine côtelée" in opened["greeting"] and "T-shirt en coton épais" in opened["greeting"]
-    assert "aucune autre commande en préparation ou en livraison" in opened["greeting"]
-    assert send(open=True) == opened
-    config = {"configurable": {"thread_id": thread_id}}
-    with open_checkpointer(database) as checkpointer:
-        assert checkpointer.get(config) is None
-    first_message = {"message": "Mon pull est trop petit", "message_id": str(uuid4())}
-    question = send(**first_message)
-    assert question["status"] == "taille_a_preciser"
-    assert question["question"] == "Quelle taille souhaitez-vous pour l’échange ?"
-    assert send(**first_message) == question
-    with open_checkpointer(database) as checkpointer:
-        graph = build_graph(checkpointer, Shop(database), interpret_demo)
-        snapshot = graph.get_state(config)
-        assert snapshot.next == ("demander_taille",)
-        assert snapshot.interrupts[0].value == {"question": question["question"]}
+def new_thread(customer="CLI-001", order="DEMO-1001"):
+    return f"{customer}:{order}:{uuid4()}"
 
-    same_size = {"message": "Du S", "message_id": str(uuid4())}
-    repeated_question = send(**same_size)
-    assert repeated_question["status"] == "taille_identique"
-    assert send(**same_size) == repeated_question
-    approval = send(message="Du M", message_id=str(uuid4()))
-    assert approval == {"status": "accord_requis", "action": "echange", "size": "M"}
 
-    with open_checkpointer(database) as checkpointer:
-        checkpoint = checkpointer.get(config)
-    messages = checkpoint["channel_values"]["messages"]
-    assert checkpoint["channel_values"]["has_other_active_orders"] is False
-    assert [message.content for message in messages] == ["Mon pull est trop petit", "Du S", "Du M"]
+def stock(database, size="M"):
+    with psycopg.connect(database) as db:
+        return db.execute(
+            "SELECT quantity FROM shop.sav_stock WHERE product_id = 'ART-001' AND size = %s", (size,),
+        ).fetchone()[0]
+
+
+def test_studio_graph_matches_excalidraw():
+    from agent_sav.studio import graph
+
+    labels = {
+        "START": "__start__",
+        "Que souhaitez-vous": "choisir_action",
+        "Quel article ?": "choisir_article",
+        "Quelle taille /": "demander_taille",
+        "check_stock": "check_stock",
+        "Rupture : proposer": "proposer_retour",
+        "enregistrer_demande": "enregistrer_demande",
+        "notifier_boutique": "notifier_boutique",
+        "⏸ INTERRUPT 1": "attendre_validation_boutique",
+        "Mail client : refus +": "envoyer_mail_refus",
+        "envoyer_mail_confirmation": "envoyer_mail_confirmation",
+        "⏸ INTERRUPT 2": "attendre_confirmation_client",
+        "Demande annulée": "annuler_demande",
+        "mail récapitulatif": "envoyer_mail_recapitulatif",
+        "END": "__end__",
+    }
+    source = Path(__file__).resolve().parents[1] / "schema_langgraph" / "livree_uniquement.excalidraw"
+    elements = [element for element in json.loads(source.read_text(encoding="utf-8"))["elements"]
+                if not element["isDeleted"]]
+    texts = {element["containerId"]: element["text"].splitlines()[0]
+             for element in elements if element["type"] == "text" and element["containerId"]}
+    nodes = {element["id"]: labels[texts[element["id"]]]
+             for element in elements if element["type"] == "rectangle"}
+    arrows = {
+        (nodes[element["startBinding"]["elementId"]], nodes[element["endBinding"]["elementId"]], texts.get(element["id"]))
+        for element in elements if element["type"] == "arrow"
+    }
+
+    displayed = graph.get_graph()
+    assert set(displayed.nodes) == set(nodes.values())
+    assert {(edge.source, edge.target, edge.data) for edge in displayed.edges} == arrows
+
+
+def pending(boutique, *, action="Je veux un échange en M.", line=1):
+    thread = new_thread()
+    state = send_to_sav(boutique, thread_id=thread, line_number=line, message=action)
+    assert state["status"] == "attente_boutique"
+    assert "transmise" in state["message_client"]
+    return thread
+
+
+def shop_route(boutique):
+    return re.search(r'action="(/boutique/sav/[^"]+)"', get_page(boutique, "/boutique/sav"))[1]
+
+
+def mail_link(boutique, decision):
+    mailbox = get_page(boutique, "/sav/mail/CLI-001")
+    return re.search(r'href="(/sav/reponse/[^"/]+/' + decision + r'/[a-f0-9]+)"', mailbox)[1]
+
+
+def test_exchange_resumes_after_commit_without_duplicate(database):
+    cli(database, "init")
+    opened = json.loads(cli(database, "ouvrir", "Je veux un échange en M.", "--ligne", "1", "--demo", "echange"))
+    thread = opened["thread_id"]
+    assert opened["status"] == "attente_boutique"
+    assert opened["interruption"]["taille"] == "M"
+    assert stock(database) == 19
 
     with psycopg.connect(database) as db:
         assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
-    completed = send(approved=True)
-    assert completed["status"] == "termine"
+
+    validated = json.loads(cli(database, "decider", thread, "oui"))
+    assert validated["status"] == "attente_client"
+    link = validated["liens_mail"]["confirmer"]
+    cli(database, "repondre", link, "--simuler-timeout", code=2)
+
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT case_id::text, size FROM shop.sav_returns").fetchall() == [
-            (checkpoint["channel_values"]["case_id"], "M"),
+        (reference,) = db.execute("SELECT id FROM shop.sav_returns").fetchone()
+    resumed = json.loads(cli(database, "reprendre", thread))
+    assert resumed["status"] == "termine"
+    assert resumed["return_id"] == reference
+    assert stock(database) == 19
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT id FROM shop.sav_returns").fetchall() == [(reference,)]
+        assert db.execute("SELECT kind FROM shop.sav_messages ORDER BY kind").fetchall() == [
+            ("boutique",), ("confirmation",), ("recapitulatif",),
         ]
 
 
-def test_purchase_history_and_case_are_scoped_to_customer_and_order(database, boutique):
+def test_chat_article_then_variant_shop_and_signed_confirmation(database, boutique):
+    thread = new_thread()
+    opened = send_to_sav(boutique, thread_id=thread, open=True)
+    assert "Bonjour Camille !" in opened["greeting"]
+    assert "DEMO-1001 est livrée" in opened["greeting"]
+    assert "Pull en laine côtelée" in opened["greeting"]
+
+    unclear = {"thread_id": thread, "message": "Bonjour", "message_id": str(uuid4())}
+    assert send_to_sav(boutique, **unclear)["status"] == "demande_a_clarifier"
+    still_unclear = {**unclear, "message": "Pouvez-vous m’aider ?", "message_id": str(uuid4())}
+    assert send_to_sav(boutique, **still_unclear)["status"] == "demande_a_clarifier"
+    assert send_to_sav(boutique, **still_unclear)["status"] == "demande_a_clarifier"
+    request = {"thread_id": thread, "message": "Le pull est trop petit", "message_id": str(uuid4())}
+    choices = send_to_sav(boutique, **request)
+    assert choices["status"] == "article_a_preciser"
+    assert [item["line_number"] for item in choices["articles"]] == [1, 2, 3]
+    assert send_to_sav(boutique, **request) == choices
+    assert send_to_sav(boutique, thread_id=thread, article=999)["status"] == "article_a_preciser"
+    variant = send_to_sav(boutique, thread_id=thread, article=1)
+    assert variant["status"] == "taille_a_preciser"
+    assert "Noir" in variant["coloris"]
+    same = {"thread_id": thread, "message": "Du S", "message_id": str(uuid4())}
+    assert send_to_sav(boutique, **same)["status"] == "taille_identique"
+    assert send_to_sav(boutique, **same)["status"] == "taille_identique"
+
+    reply = {"thread_id": thread, "message": "En coloris Noir", "message_id": str(uuid4())}
+    registered = send_to_sav(boutique, **reply)
+    assert (registered["status"], registered["size"], registered["color"]) == ("attente_boutique", "S", "Noir")
+    assert send_to_sav(boutique, **reply) == registered
+    config = {"configurable": {"thread_id": thread}}
+    with open_checkpointer(database) as checkpointer:
+        graph = build_graph(checkpointer, Shop(database), interpret_demo)
+        assert graph.get_state(config).next == ("attendre_validation_boutique",)
+    with pytest.raises(HTTPError) as chat_approval:
+        send_to_sav(boutique, thread_id=thread, approved=True)
+    assert chat_approval.value.code == 400
+    assert "Aucun message" in get_page(boutique, "/sav/mail/CLI-001")
+
+    route = shop_route(boutique)
+    assert "Demande validée" in post_form(boutique, route, decision="oui")
+    with open_checkpointer(database) as checkpointer:
+        graph = build_graph(checkpointer, Shop(database), interpret_demo)
+        assert graph.get_state(config).next == ("attendre_confirmation_client",)
+    default_mailbox = get_page(boutique, "/sav/mail")
+    assert '<option value="CLI-001" selected>Camille Moreau</option>' in default_mailbox
+    assert '<option value="CLI-002">Noah Laurent</option>' in default_mailbox
+    assert "Confirmez votre demande SAV" in default_mailbox
+    other_mailbox = get_page(boutique, "/sav/mail?client=CLI-002")
+    assert '<option value="CLI-002" selected>Noah Laurent</option>' in other_mailbox
+    assert "Aucun message" in other_mailbox
+    assert other_mailbox == get_page(boutique, "/sav/mail/CLI-002")
+    link = mail_link(boutique, "confirmer")
+    changed = link[:-1] + ("0" if link[-1] != "0" else "1")
+    with pytest.raises(HTTPError) as forged:
+        post_form(boutique, changed)
+    assert forged.value.code == 404
+    assert "Confirmer la demande" in get_page(boutique, link)
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
+
+    assert "demande est confirmée" in post_form(boutique, link)
+    assert "demande est confirmée" in post_form(boutique, link)
+    assert "Récapitulatif" in get_page(boutique, "/sav/mail/CLI-001")
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT line_number, size, color FROM shop.sav_returns").fetchall() == [(1, "S", "Noir")]
+        assert db.execute(
+            "SELECT quantity FROM shop.sav_color_stock WHERE product_id = 'ART-001' AND size = 'S' AND color = 'Noir'"
+        ).fetchone() == (9,)
+
+
+@pytest.mark.parametrize("shop_refusal", [True, False])
+def test_refusal_releases_exchange_stock(database, boutique, shop_refusal):
+    thread = pending(boutique)
+    assert stock(database) == 19
+    route = shop_route(boutique)
+    if shop_refusal:
+        with pytest.raises(HTTPError) as missing_reason:
+            post_form(boutique, route, decision="non")
+        assert missing_reason.value.code == 400
+        assert "Demande refusée" in post_form(boutique, route, decision="non", reason="Délai dépassé")
+        mailbox = get_page(boutique, "/sav/mail/CLI-001")
+        assert "Délai dépassé" in mailbox
+        status = "refuse_boutique"
+    else:
+        post_form(boutique, route, decision="oui")
+        assert stock(database) == 19
+        link = mail_link(boutique, "refuser")
+        assert "demande est annulée" in post_form(boutique, link)
+        assert "demande est annulée" in post_form(boutique, link)
+        status = "annule"
+    assert stock(database) == 20
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT status FROM shop.sav_requests WHERE thread_id = %s", (thread,)).fetchone() == (status,)
+        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
+
+
+def test_stock_failure_offers_return_without_notifying_shop(database, boutique):
+    out = send_to_sav(boutique, thread_id=new_thread(), line_number=1, message="Je veux un échange en XL.")
+    assert out["status"] == "stock_indisponible"
+    assert "retourner" in out["message_client"]
+    assert "Aucune demande" in get_page(boutique, "/boutique/sav")
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+    pending(boutique, action="Je veux retourner cet article.", line=out["line_number"])
+    post_form(boutique, shop_route(boutique), decision="oui")
+    post_form(boutique, mail_link(boutique, "confirmer"))
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT line_number, action, size FROM shop.sav_returns").fetchall() == [(1, "retour", None)]
+
+
+def test_two_requests_cannot_reserve_the_last_unit(database, boutique, monkeypatch):
+    with psycopg.connect(database) as db:
+        db.execute("UPDATE shop.sav_stock SET quantity = 1 WHERE product_id = 'ART-001' AND size = 'M'")
+    both_at_stock_check = Barrier(2, timeout=5)
+    original = Shop.reserve_exchange
+
+    def check_together(self, *args):
+        both_at_stock_check.wait()
+        return original(self, *args)
+
+    monkeypatch.setattr(Shop, "reserve_exchange", check_together)
+
+    def submit(thread):
+        return send_to_sav(boutique, thread_id=thread, line_number=1, message="Je veux un échange en M.")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(submit, [new_thread(), new_thread()]))
+    assert {result["status"] for result in results} == {"attente_boutique", "stock_indisponible"}
+    assert stock(database) == 0
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (1,)
+        assert db.execute("SELECT count(*) FROM shop.sav_messages").fetchone() == (1,)
+
+
+def test_purchase_history_and_case_are_scoped_to_customer_and_order(boutique):
     with urlopen(boutique + "/api/clients", timeout=10) as response:
         customers = json.load(response)["customers"]
     assert len(customers) == 20
@@ -214,96 +339,26 @@ def test_purchase_history_and_case_are_scoped_to_customer_and_order(database, bo
     all_orders = [order for orders in histories.values() for order in orders]
     assert len({item["product_id"] for order in all_orders for item in order["items"]}) == 20
     assert all(order["total_cents"] == sum(item["price_cents"] for item in order["items"]) for order in all_orders)
-    validated = next(order for order in all_orders if order["status"] == "validee")
-    in_transit = next(order for order in histories[validated["customer_id"]] if order["status"] == "en_livraison")
-    opened = send_to_sav(
-        boutique, thread_id=f"{validated['customer_id']}:{validated['id']}:{uuid4()}", open=True,
-    )
-    assert "Bonjour Inès !" in opened["greeting"]
-    assert "est validée" in opened["greeting"]
-    assert "une autre commande en préparation ou en livraison" in opened["greeting"]
-    greeting = send_to_sav(
-        boutique, thread_id=f"{in_transit['customer_id']}:{in_transit['id']}:{uuid4()}", open=True,
-    )["greeting"]
-    assert "est en livraison" in greeting
-    assert "une autre commande en préparation ou en livraison" in greeting
-    delivered = next(order for order in histories[validated["customer_id"]] if order["status"] == "livree")
-    delivered_thread = f"{delivered['customer_id']}:{delivered['id']}:{uuid4()}"
-    greeting = send_to_sav(boutique, thread_id=delivered_thread, open=True)["greeting"]
-    assert "2 autres commandes en préparation ou en livraison" in greeting
-    send_to_sav(boutique, thread_id=delivered_thread, message="Bonjour")
-    with open_checkpointer(database) as checkpointer:
-        checkpoint = checkpointer.get({"configurable": {"thread_id": delivered_thread}})["channel_values"]
-        assert checkpoint["active_order_count"] == 2
-        assert checkpoint["has_other_active_orders"] is True
-    accessory_order, accessory = next(
-        (order, item) for order in all_orders for item in order["items"]
-        if order["status"] == "livree" and not item["sized"]
-    )
-    for order, item, status in (
-        (validated, validated["items"][0], "commande_validee"),
-        (in_transit, in_transit["items"][0], "commande_en_transit"),
-        (accessory_order, accessory, "article_sans_taille"),
-    ):
-        result = send_to_sav(
-            boutique, thread_id=f"{order['customer_id']}:{order['id']}:{uuid4()}",
-            line_number=item["line_number"], message="Je veux un échange en L.",
-        )
-        assert result["status"] == status
-
-    order, other_order = histories["CLI-001"]
-    first, item, *_ = order["items"]
-    nonce = uuid4()
-    thread_id = f"CLI-001:{order['id']}:{nonce}"
-    identity = {"thread_id": thread_id, "line_number": item["line_number"]}
     with pytest.raises(HTTPError) as wrong_owner:
-        send_to_sav(boutique, thread_id=f"CLI-002:{order['id']}:{nonce}", message="Je veux un échange en L.")
+        send_to_sav(boutique, thread_id=new_thread("CLI-002"), message="Je veux un retour.")
     assert wrong_owner.value.code == 404
-    same_size = send_to_sav(boutique, **identity, message=f"Je veux un échange en {item['size']}.")
-    assert same_size["status"] == "taille_identique"
-    assert f"taille {item['size']}" in same_size["question"]
-    assert send_to_sav(boutique, **identity, message="Du L")["status"] == "accord_requis"
-
-    with pytest.raises(HTTPError) as wrong_item:
-        send_to_sav(boutique, **{**identity, "line_number": first["line_number"]}, approved=True)
-    assert wrong_item.value.code == 404
-
-    other_customer_order = histories["CLI-002"][0]
-    for alternate in (other_order, other_customer_order):
-        with pytest.raises(HTTPError) as wrong_case:
-            send_to_sav(
-                boutique, thread_id=f"{alternate['customer_id']}:{alternate['id']}:{nonce}", approved=True,
-            )
-        assert wrong_case.value.code == 404
-
-    result = send_to_sav(boutique, **identity, approved=True)
-    assert result["status"] == "termine"
-    with open_checkpointer(database) as checkpointer:
-        checkpoint = checkpointer.get({"configurable": {"thread_id": thread_id}})["channel_values"]
-        assert (checkpoint["customer_id"], checkpoint["order_id"], checkpoint["line_number"]) == (
-            "CLI-001", order["id"], item["line_number"],
-        )
-    with psycopg.connect(database) as db:
-        assert db.execute("SELECT order_id, line_number FROM shop.sav_returns").fetchall() == [
-            (order["id"], item["line_number"]),
-        ]
-        assert db.execute(
-            "SELECT product_id, quantity FROM shop.sav_stock WHERE size = 'L' AND quantity < 20"
-        ).fetchall() == [(item["product_id"], 19)]
+    for status, expected in [("validee", "commande_validee"), ("en_livraison", "commande_en_transit")]:
+        order = next(order for order in all_orders if order["status"] == status)
+        result = send_to_sav(boutique, thread_id=new_thread(order["customer_id"], order["id"]), message="Je veux un retour.")
+        assert result["status"] == expected
 
 
-def test_migrates_legacy_tables_and_resumes_a_committed_exchange(database):
+def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
     cli(database, "init")
-    opened = json.loads(cli(database, "ouvrir", "Je veux un échange en M.", "--demo", "echange"))
-    case_id = opened["case_id"]
-    cli(database, "decider", opened["thread_id"], "oui", "--simuler-timeout", code=2)
+    opened = json.loads(cli(database, "ouvrir", "Je veux un échange en M.", "--ligne", "1", "--demo", "echange"))
+    thread = opened["thread_id"]
+    decision = json.loads(cli(database, "decider", thread, "oui"))
+    completed = json.loads(cli(database, "repondre", decision["liens_mail"]["confirmer"]))
 
     with psycopg.connect(database) as db:
         (return_id,) = db.execute("SELECT id FROM shop.sav_returns").fetchone()
-        for table in ("checkpoints", "checkpoint_blobs", "checkpoint_writes"):
-            db.execute(sql.SQL("UPDATE {} SET thread_id = %s WHERE thread_id = %s").format(
-                sql.Identifier("langgraph", table),
-            ), (case_id, opened["thread_id"]))
+        db.execute("DROP TABLE shop.sav_messages, shop.sav_requests, shop.sav_color_stock")
+        db.execute("ALTER TABLE shop.sav_returns DROP COLUMN color")
         in_transit = db.execute(
             "SELECT id, ordered_on FROM shop.sav_orders WHERE status = 'en_livraison' ORDER BY id"
         ).fetchall()
@@ -339,15 +394,15 @@ def test_migrates_legacy_tables_and_resumes_a_committed_exchange(database):
 
     cli(database, "init")
     cli(database, "init")
-    resumed = json.loads(cli(database, "reprendre", case_id))
+    resumed = json.loads(cli(database, "statut", thread))
     assert resumed["status"] == "termine"
-    assert resumed["return_id"] == return_id
+    assert resumed["return_id"] == return_id == completed["return_id"]
     with psycopg.connect(database) as db:
         tables = set(db.execute(
             "SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN ('shop', 'langgraph', 'public')"
         ).fetchall())
         assert tables == (
-            {("shop", table) for table in SHOP_TABLES}
+            {("shop", table) for table in (*SHOP_TABLES, "sav_requests", "sav_messages", "sav_color_stock")}
             | {("langgraph", table) for table in CHECKPOINT_TABLES}
             | {("public", "unrelated")}
         )

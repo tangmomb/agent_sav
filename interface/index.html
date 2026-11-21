@@ -22,6 +22,10 @@
 
   <main class="shell">
     <p class="breadcrumb">Mon compte <span aria-hidden="true">/</span> Mes achats</p>
+    <nav class="sav-nav" aria-label="Démonstration SAV">
+      <a id="sav-mail" href="/sav/mail/CLI-001">Boîte mail de démonstration</a>
+      <a href="/boutique/sav">Espace boutique</a>
+    </nav>
     <div class="order-heading">
       <h1>Mes achats</h1>
       <p id="orders-status" role="status">Chargement de vos commandes…</p>
@@ -47,10 +51,6 @@
         </div>
         <button id="close-chat" class="icon-button" type="button" aria-label="Fermer le chat">×</button>
       </header>
-      <div class="chat-product" hidden>
-        <label for="chat-product">Article concerné</label>
-        <select id="chat-product"></select>
-      </div>
       <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <div id="chat-actions" class="chat-actions" aria-label="Réponses rapides"></div>
       <form id="chat-form" class="chat-form">

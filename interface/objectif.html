@@ -89,15 +89,16 @@
             vers la taille M.</p>
         </li>
         <li>
-          <h3>Vérifier et attendre l’accord</h3>
-          <p>Le code vérifie la commande. LangGraph met le dossier en pause et
-            sauvegarde son état dans PostgreSQL pour pouvoir reprendre plus tard.</p>
+          <h3>Vérifier la variante et transmettre la demande</h3>
+          <p>Le code vérifie le stock avant d’enregistrer la demande. En cas
+            de rupture, le chat propose un retour. Si la taille est disponible,
+            elle est réservée et LangGraph attend la décision de la boutique.</p>
         </li>
         <li>
-          <h3>Exécuter l’échange</h3>
-          <p>Après l’accord, le service marchand réserve la taille M et crée le
-            retour dans une seule transaction. Si le stock est épuisé, aucun
-            retour n’est créé.</p>
+          <h3>Attendre la confirmation du client</h3>
+          <p>Si la boutique valide la demande, le client reçoit un mail de
+            démonstration avec des liens signés. Sa confirmation crée le retour
+            et son récapitulatif dans une seule transaction.</p>
         </li>
       </ol>
       <p>Le LLM intervient uniquement pour interpréter la demande. Le code
@@ -111,10 +112,8 @@
         réessaie avec le même identifiant de dossier. Cet identifiant sert de
         <strong>clé d’idempotence</strong>. La boutique retrouve le retour
         existant et renvoie sa référence.</p>
-      <p><strong>Vérifié en base après la reprise</strong> · Un seul retour
-        créé et une seule unité de stock réservée. Le scénario a été testé
-        avec un appel réel à Mistral Large 4 et une boutique simulée. Un second
-        test couvre la rupture de stock pendant l’attente.</p>
+      <p>Les tests vérifient qu’après la reprise, la base contient un seul retour,
+        une seule réservation et un seul mail récapitulatif.</p>
     </section>
 
     <section aria-labelledby="portfolio">
