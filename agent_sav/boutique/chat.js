@@ -63,6 +63,9 @@ closeButton.addEventListener("click", () => closeChat());
 panel.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeChat();
 });
+window.addEventListener("resize", () => {
+  if (active?.confirming) log.scrollTop = log.scrollHeight;
+});
 
 function say(chat, text, speaker = "agent") {
   const message = document.createElement("p");

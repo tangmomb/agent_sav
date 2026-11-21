@@ -77,12 +77,24 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
             self.reply(status, json.dumps(data, ensure_ascii=False).encode(), "application/json")
 
         def page(self, title: str, body: str, status: HTTPStatus = HTTPStatus.OK) -> None:
-            html = f"""<!doctype html><html lang="fr"><meta charset="utf-8">
+            title = escape(title)
+            mail_current = ' aria-current="page"' if title == "Boîte mail de démonstration" else ""
+            shop_current = ' aria-current="page"' if title == "Demandes SAV" else ""
+            html = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <title>{title} · Maison Orme</title>
                 <link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/boutique.css">
-                <main class="shell sav-page"><p><a href="/mes-achats">Mes achats</a> · <a href="/boutique/sav">Espace boutique</a></p>
-                <h1>{title}</h1>{body}</main></html>"""
+                </head><body>
+                <header class="site-header"><div class="shell header-inner">
+                  <a class="wordmark" href="/mes-achats">Maison Orme<span>.</span></a>
+                  <nav class="site-nav" aria-label="Navigation">
+                    <a href="/mes-achats">Mes achats</a>
+                    <a href="/sav/mail"{mail_current}>Boîte mail</a>
+                    <a href="/boutique/sav"{shop_current}>Espace boutique</a>
+                  </nav>
+                </div></header>
+                <main class="shell"><h1 class="page-heading">{title}</h1>{body}</main>
+                </body></html>"""
             self.reply(status, html.encode(), "text/html; charset=utf-8")
 
         def shop_page(self) -> None:
@@ -93,18 +105,19 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 cards.append(f"""<article class="order-card sav-card">
                     <h2>{escape(request["action"].capitalize())} · {escape(request["order_id"])}</h2>
                     <p>{escape(request["customer_id"])} · {variant}</p>
-                    <form method="post" action="/boutique/sav/{case_id}">
+                    <form class="refusal-form" method="post" action="/boutique/sav/{case_id}">
                       <button class="contact" name="decision" value="oui">Valider</button>
-                      <label for="motif-{case_id}">Motif du refus</label>
-                      <input id="motif-{case_id}" name="reason" maxlength="1000">
-                      <button class="contact" name="decision" value="non">Refuser</button>
+                      <label for="motif-{case_id}">Motif du refus
+                        <input class="control" id="motif-{case_id}" name="reason" maxlength="1000">
+                      </label>
+                      <button class="contact secondary" name="decision" value="non">Refuser</button>
                     </form></article>""")
-            self.page("Demandes SAV", "".join(cards) or "<p>Aucune demande en attente.</p>")
+            self.page("Demandes SAV", "".join(cards) or '<p class="empty-state">Aucune demande en attente.</p>')
 
         def mailbox_page(self, customer_id: str | None) -> None:
             customers = shop.customers()
             if not customers:
-                self.page("Boîte mail de démonstration", "<p>Aucun compte de démonstration disponible.</p>")
+                self.page("Boîte mail de démonstration", '<p class="empty-state">Aucun compte de démonstration disponible.</p>')
                 return
             if customer_id is None:
                 customer_id = customers[0]["id"]
@@ -118,7 +131,7 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 options.append(f'<option value="{escape(customer["id"])}"{selected}>{escape(customer["name"])}</option>')
             picker = f"""<form class="account mailbox-account" method="get" action="/sav/mail">
                 <label for="mail-client">Compte de démo</label>
-                <select id="mail-client" name="client">{"".join(options)}</select>
+                <select class="control" id="mail-client" name="client">{"".join(options)}</select>
                 <button class="contact" type="submit">Ouvrir la boîte mail</button>
             </form>"""
 
@@ -127,12 +140,15 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 links = message.get("links")
                 actions = ""
                 if links:
-                    actions = f'<a href="{links["confirmer"]}">Confirmer</a> · <a href="{links["refuser"]}">Refuser</a>'
+                    actions = (
+                        f'<div class="sav-actions"><a class="contact" href="{links["confirmer"]}">Confirmer</a>'
+                        f'<a class="contact secondary" href="{links["refuser"]}">Refuser</a></div>'
+                    )
                 cards.append(
                     f'<article class="order-card sav-card"><h2>{escape(message["subject"])}</h2>'
                     f'<p>{escape(message["body"]).replace(chr(10), "<br>")}</p>{actions}</article>'
                 )
-            self.page("Boîte mail de démonstration", picker + ("".join(cards) or "<p>Aucun message.</p>"))
+            self.page("Boîte mail de démonstration", picker + ("".join(cards) or '<p class="empty-state">Aucun message.</p>'))
 
         def do_GET(self) -> None:
             route, _, query = self.path.partition("?")

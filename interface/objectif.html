@@ -7,82 +7,47 @@
   <title>Objectif du projet · Agent SAV</title>
   <link rel="stylesheet" href="theme.css">
   <style>
-    body { line-height: 1.6; }
-    a { color: var(--accent); text-underline-offset: .2em; }
-    a:hover { color: var(--accent-hover); }
-    h1, h2, h3, p, blockquote { margin: 0; }
-    h1, h2 { line-height: 1.08; font-weight: 700; }
-    h1 { font-size: clamp(2.4rem, 7vw, 5rem); letter-spacing: -.065em; }
-    h2 { font-size: clamp(1.9rem, 4vw, 2.7rem); letter-spacing: -.035em; }
-    h3 { font-size: 1.075rem; line-height: 1.35; }
-
-    .shell { width: min(66rem, calc(100% - 3rem)); margin-inline: auto; }
-    .hero {
-      background: radial-gradient(ellipse at 70% 0%, #26352f 0%, transparent 72%), #151923;
-      border-bottom: 1px solid var(--line);
-      padding: clamp(3rem, 8vw, 6rem) 0;
-    }
-    .hero hgroup p { margin-bottom: .85rem; color: var(--accent); font-size: .875rem; font-weight: 650; }
-    .hero .lead { max-width: 43rem; margin-top: 1.2rem; color: var(--muted); font-size: clamp(1rem, 2vw, 1.3rem); }
-    main { padding-block: clamp(2rem, 5vw, 3.6rem); }
-    main > section + section { margin-top: clamp(2.3rem, 6vw, 4rem); }
-    section > p { margin-top: .9rem; max-width: 72ch; color: var(--muted); }
+    .objective .lead { max-width: 62ch; }
+    .objective section { border-top: 1px solid var(--line); padding-block: clamp(1.5rem, 4vw, 2.3rem); }
+    .objective section > p { max-width: 72ch; margin-top: .75rem; color: var(--muted); }
     blockquote {
-      margin-top: 1.25rem;
-      padding: .8rem 1rem;
-      border-left: 3px solid var(--accent);
-      border-radius: 0 .65rem .65rem 0;
-      background: var(--accent-surface);
-      color: var(--accent);
+      margin: 1rem 0;
+      padding: .55rem 1rem;
+      border-left: 2px solid var(--accent-border);
+      background: var(--surface);
+      color: var(--ink);
     }
-
-    .steps {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: .85rem;
-      margin: 1.1rem 0 0;
-      padding: 0;
-      list-style: none;
-    }
-
-    .steps li { padding: 1.35rem; border: 1px solid var(--line); border-radius: 1rem; background: var(--surface); }
-    .steps p { margin-top: .45rem; color: var(--muted); }
-
-    .proof {
-      padding: clamp(1.2rem, 4vw, 2.25rem);
-      border: 1px solid #405442;
-      border-radius: 1rem;
-      background: linear-gradient(125deg, var(--accent-surface), var(--surface));
-    }
-    .proof strong { color: var(--accent); }
-    .metrics { display: flex; flex-wrap: wrap; gap: .5rem; padding: 0; margin: 1rem 0 0; list-style: none; }
-    .metrics li { padding: .4rem .8rem; border: 1px solid var(--line); border-radius: 2rem; background: var(--surface); }
-    footer { padding-bottom: 2.5rem; }
-    footer .shell { padding-top: 1.1rem; border-top: 1px solid var(--line); }
-
-    @media (max-width: 42rem) {
-      .shell { width: calc(100% - 2rem); }
-      .steps { grid-template-columns: 1fr; }
-    }
+    .steps { margin: 1.25rem 0; padding-inline-start: 1.5rem; max-width: 72ch; }
+    .steps li { padding-inline-start: .35rem; }
+    .steps li + li { margin-top: 1.15rem; }
+    .steps li::marker { color: var(--accent); }
+    .steps h3 { font-size: 1rem; font-weight: 620; }
+    .steps p { margin-top: .35rem; color: var(--muted); }
+    .proof strong { color: var(--ink); }
+    .metrics { display: grid; gap: .25rem; padding-inline-start: 1.25rem; color: var(--muted); }
   </style>
 </head>
 <body>
-  <header class="hero">
-    <div class="shell">
-      <hgroup>
-        <p>Objectif du projet</p>
-        <h1>Agent SAV e&#8209;commerce</h1>
-      </hgroup>
-      <p class="lead">Traiter un retour ou un échange à partir d’un message client,
-        puis reprendre le dossier après une coupure sans créer de doublon.</p>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="wordmark" href="sommaire.html">Agent SAV<span>.</span></a>
+      <nav class="site-nav" aria-label="Navigation">
+        <a href="sommaire.html">Sommaire</a>
+        <a href="objectif.html" aria-current="page">Objectif</a>
+      </nav>
     </div>
   </header>
 
-  <main class="shell">
+  <main class="shell objective">
+    <div class="page-heading">
+      <h1>Agent SAV e&#8209;commerce</h1>
+      <p class="lead">Traiter un retour ou un échange à partir d’un message client,
+        puis reprendre le dossier après une coupure sans créer de doublon.</p>
+    </div>
     <section aria-labelledby="parcours">
       <h2 id="parcours">Du message à l’échange</h2>
       <blockquote>«&nbsp;Le pull est trop petit, je veux le même en M.&nbsp;»</blockquote>
-      <ol class="steps" role="list">
+      <ol class="steps">
         <li>
           <h3>Comprendre la demande</h3>
           <p>Mistral Large 4 lit le message et en extrait une demande d’échange
@@ -123,7 +88,7 @@
         un LLM qui appelle directement les outils et le workflow persistant.
         L’objectif est de voir quand le modèle aide à comprendre la demande
         et quand la reprise évite une erreur d’exécution.</p>
-      <ul class="metrics" role="list">
+      <ul class="metrics">
         <li>Dossiers correctement résolus</li>
         <li>Écritures erronées ou en double</li>
         <li>Coût</li>
@@ -132,8 +97,8 @@
     </section>
   </main>
 
-  <footer>
-    <div class="shell">
+  <footer class="site-footer">
+    <div class="shell footer-inner">
       <a href="../README.md">Voir les commandes de démo dans le README</a>
     </div>
   </footer>
