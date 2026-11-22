@@ -6,17 +6,17 @@
   <meta name="description" content="Retrouvez vos achats et contactez le service client de Maison Orme.">
   <title>Mes achats · Maison Orme</title>
   <link rel="stylesheet" href="/theme.css">
-  <link rel="stylesheet" href="/boutique.css">
-  <script type="module" src="/achats.js"></script>
+  <link rel="stylesheet" href="/shop.css">
+  <script type="module" src="/orders.js"></script>
 </head>
 <body>
   <header class="site-header">
     <div class="shell header-inner">
-      <a class="wordmark" href="/mes-achats">Maison Orme<span>.</span></a>
+      <a class="wordmark" href="/orders">Maison Orme<span>.</span></a>
       <nav class="site-nav" aria-label="Navigation">
-        <a href="/mes-achats" aria-current="page">Mes achats</a>
-        <a id="sav-mail" href="/sav/mail/CLI-001">Boîte mail</a>
-        <a href="/boutique/sav">Espace boutique</a>
+        <a href="/orders" aria-current="page">Mes achats</a>
+        <a id="support-mailbox" href="/support/mailbox/CLI-001">Boîte mail</a>
+        <a href="/shop/support">Espace boutique</a>
       </nav>
     </div>
   </header>
@@ -43,16 +43,22 @@
   </footer>
 
   <div class="chat">
+    <button id="open-chat" class="chat-launcher" type="button" aria-controls="chat-panel" aria-expanded="false" disabled>
+      <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linejoin="round">
+        <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l1.9-3.8a8.5 8.5 0 1 1 15.1-4.7Z"/>
+        <path d="M8.5 10h7M8.5 13.5H13"/>
+      </svg>
+      Service client
+    </button>
     <section id="chat-panel" class="chat-panel" aria-labelledby="chat-title" hidden>
       <header class="chat-header">
         <div class="chat-heading">
           <h2 id="chat-title">Service client</h2>
-          <p id="chat-order"></p>
+          <p id="chat-customer"></p>
         </div>
         <button id="close-chat" class="icon-button" type="button" aria-label="Fermer le chat">×</button>
       </header>
       <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
-      <div id="chat-actions" class="chat-actions" aria-label="Réponses rapides"></div>
       <form id="chat-form" class="chat-form">
         <input class="control" id="chat-input" aria-label="Votre message" placeholder="Écrivez votre message…" maxlength="1000" autocomplete="off" required>
         <button id="send-chat" class="contact send-button" type="submit" aria-label="Envoyer">
@@ -70,7 +76,6 @@
       <ul class="order-items" aria-label="Articles de la commande"></ul>
       <div class="order-summary">
         <p>Total <strong class="order-total price"></strong></p>
-        <button class="contact" type="button" aria-controls="chat-panel" aria-expanded="false">Contacter le SAV</button>
       </div>
     </li>
   </template>

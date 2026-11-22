@@ -4,15 +4,16 @@ const select = document.querySelector("#customer");
 const orders = document.querySelector("#orders");
 const status = document.querySelector("#orders-status");
 const retry = document.querySelector("#retry-orders");
-const mailbox = document.querySelector("#sav-mail");
+const mailbox = document.querySelector("#support-mailbox");
+const helpButton = document.querySelector("#open-chat");
 const template = document.querySelector("#order-card");
 const itemTemplate = document.querySelector("#order-item");
 const money = new Intl.NumberFormat("fr-FR", {style: "currency", currency: "EUR"});
 const date = new Intl.DateTimeFormat("fr-FR", {dateStyle: "long", timeZone: "UTC"});
 const statusLabels = {
-  validee: "Commande validée",
-  en_livraison: "En livraison",
-  livree: "Livrée",
+  confirmed: "Commande validée",
+  in_transit: "En livraison",
+  delivered: "Livrée",
 };
 let currentRequest;
 
@@ -41,9 +42,6 @@ function orderCard(order) {
     card.querySelector(".order-items").append(row);
   }
   card.querySelector(".order-total").textContent = money.format(order.total_cents / 100);
-  const button = card.querySelector("button");
-  button.setAttribute("aria-label", "Contacter le SAV pour la commande " + order.id);
-  button.addEventListener("click", () => openChat(order, select.selectedOptions[0].textContent, button));
   return card;
 }
 
@@ -56,9 +54,9 @@ async function loadOrders() {
   retry.hidden = true;
   status.textContent = "Chargement de vos commandes…";
   const customer = select.selectedOptions[0];
-  mailbox.href = "/sav/mail/" + customer.value;
+  mailbox.href = "/support/mailbox/" + customer.value;
   try {
-    const data = await getJSON("/api/clients/" + customer.value + "/commandes", signal);
+    const data = await getJSON("/api/customers/" + customer.value + "/orders", signal);
     if (signal.aborted) return;
     const count = data.orders.length;
     status.textContent = count
@@ -75,13 +73,14 @@ async function loadOrders() {
 async function loadCustomers() {
   retry.hidden = true;
   try {
-    const {customers} = await getJSON("/api/clients");
+    const {customers} = await getJSON("/api/customers");
     select.replaceChildren(...customers.map(({id, name}) => new Option(name, id)));
     if (!customers.length) {
       status.textContent = "Aucun compte de démonstration disponible.";
       return;
     }
     select.disabled = false;
+    helpButton.disabled = false;
     await loadOrders();
   } catch {
     status.textContent = "Impossible de charger les comptes de démonstration.";
@@ -90,5 +89,6 @@ async function loadCustomers() {
 }
 
 select.addEventListener("change", loadOrders);
+helpButton.addEventListener("click", () => openChat(select.value, select.selectedOptions[0].textContent));
 retry.addEventListener("click", () => select.disabled ? loadCustomers() : loadOrders());
 loadCustomers();

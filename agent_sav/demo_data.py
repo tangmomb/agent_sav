@@ -50,12 +50,12 @@ def seed_demo(conn) -> None:
         for position in range(order_count + int(has_pending_delivery)):
             order_id = f"DEMO-{1001 + index * 5 + position}"
             ordered_on = today - timedelta(days=2 + (index % 4) + position * 21)
-            status = "livree"
+            status = "delivered"
             if has_pending_delivery and position == 0:
-                status = "en_livraison"
+                status = "in_transit"
             elif position == order_count:
                 ordered_on = today
-                status = "validee"
+                status = "confirmed"
             orders.append((order_id, customer_id, ordered_on, status))
             pattern = (index + position) % 8
             offsets = (0, 3, 9) if pattern == 0 else (0, 3) if pattern == 4 else (0,)

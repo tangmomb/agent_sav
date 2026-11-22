@@ -6,9 +6,10 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg import sql
 from psycopg.rows import dict_row
 
+from .legacy_checkpoints import SupportPostgresSaver
 from .shop import Shop
 
-SHOP_TABLES = ("sav_customers", "sav_products", "sav_orders", "sav_order_items", "sav_stock", "sav_returns")
+SHOP_TABLES = ("sav_customers", "sav_products", "sav_orders", "sav_order_items", "sav_stock", "sav_returns", "sav_inquiries")
 CHECKPOINT_TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes")
 
 
@@ -16,7 +17,7 @@ CHECKPOINT_TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs",
 def open_checkpointer(dsn: str) -> Iterator[PostgresSaver]:
     with psycopg.connect(dsn, autocommit=True, prepare_threshold=0, row_factory=dict_row) as conn:
         conn.execute("SET search_path TO langgraph")
-        yield PostgresSaver(conn)
+        yield SupportPostgresSaver(conn)
 
 
 def initialize_database(dsn: str) -> None:

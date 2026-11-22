@@ -1,16 +1,22 @@
 flowchart TD
-    START([START]) --> action["Que souhaitez-vous faire ?<br/>échange / retour"]
-    action --> article["Quel article ?<br/>liste issue du contexte"]
-    article -->|échange| variante["Quelle taille / coloris ?"]
-    variante --> stock[check_stock]
-    stock -->|rupture| proposition["Rupture : proposer un retour"]
-    stock -->|dispo| enregistrer["enregistrer_demande<br/>en attente validation boutique"]
-    article -->|retour| enregistrer
-    enregistrer --> notifier["notifier_boutique<br/>+ message client : demande transmise"]
-    notifier --> boutique["⏸ INTERRUPT 1<br/>validation boutique : interface boutique"]
-    boutique -->|refusée| refus["Mail client : refus + motif"]
-    boutique -->|validée| mail["envoyer_mail_confirmation<br/>lien signé"]
-    mail --> client["⏸ INTERRUPT 2<br/>confirmation client par mail"]
-    client -->|refuse| annulation["Demande annulée"]
-    client -->|confirme| recap["mail récapitulatif"]
-    proposition & refus & annulation & recap --> FIN([END])
+    START([START]) --> collection["collect<br/>LLM : intention, commande, article, variante<br/>Questions via interrupt"]
+    collection -->|continue_collection| collection
+    collection -->|information| write_question["request_support_question<br/>Saisie et transmission de la question"]
+    write_question --> END
+    collection -->|request_complete| review["validate_intent<br/>Récapitulatif et accord du client"]
+    review -->|intent_needs_correction| collection
+    review -->|exchange| stock[check_stock]
+    review -->|return| register
+    review -->|abandon| END
+    stock -->|out_of_stock| offer["Rupture : proposer un retour<br/>LLM : réponse en texte libre"]
+    offer -->|return| register
+    offer -->|abandon| END
+    stock -->|available| register["register_request<br/>en attente de la boutique"]
+    register --> notify["notify_shop<br/>+ message client : demande transmise"]
+    notify --> shop_review["⏸ INTERRUPT 1<br/>validation en boutique"]
+    shop_review -->|rejected| reject["Mail client : refus et motif"]
+    shop_review -->|approved| email["send_confirmation_email<br/>lien signé"]
+    email --> customer_review["⏸ INTERRUPT 2<br/>confirmation client par mail"]
+    customer_review -->|declined| cancel["Demande annulée"]
+    customer_review -->|confirmed| summary["mail récapitulatif"]
+    reject & cancel & summary --> END([END])

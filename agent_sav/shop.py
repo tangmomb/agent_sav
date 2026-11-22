@@ -14,7 +14,7 @@ class OutOfStock(Exception):
     pass
 
 
-OrderStatus = Literal["validee", "en_livraison", "livree"]
+OrderStatus = Literal["confirmed", "in_transit", "delivered"]
 
 
 class OrderSummary(TypedDict):
@@ -69,18 +69,27 @@ class Shop:
                     customer_id text NOT NULL REFERENCES shop.sav_customers,
                     ordered_on date NOT NULL,
                     status text NOT NULL CONSTRAINT sav_orders_fulfillment_status_check
-                        CHECK (status IN ('validee', 'en_livraison', 'livree'))
+                        CHECK (status IN ('confirmed', 'in_transit', 'delivered'))
                 );
                 DO $$
                 BEGIN
                     IF EXISTS (
                         SELECT FROM pg_constraint
-                        WHERE conrelid = 'shop.sav_orders'::regclass AND conname = 'sav_orders_status_check'
+                        WHERE conrelid = 'shop.sav_orders'::regclass
+                            AND conname IN ('sav_orders_status_check', 'sav_orders_fulfillment_status_check')
+                            AND pg_get_constraintdef(oid) ~ 'validee|en_livraison|livree|expediee|shipped'
                     ) THEN
-                        ALTER TABLE shop.sav_orders DROP CONSTRAINT sav_orders_status_check;
-                        UPDATE shop.sav_orders SET status = 'en_livraison' WHERE status = 'expediee';
+                        ALTER TABLE shop.sav_orders DROP CONSTRAINT IF EXISTS sav_orders_status_check;
+                        ALTER TABLE shop.sav_orders DROP CONSTRAINT IF EXISTS sav_orders_fulfillment_status_check;
+                        UPDATE shop.sav_orders SET status = CASE status
+                            WHEN 'validee' THEN 'confirmed'
+                            WHEN 'en_livraison' THEN 'in_transit'
+                            WHEN 'expediee' THEN 'in_transit'
+                            WHEN 'shipped' THEN 'in_transit'
+                            WHEN 'livree' THEN 'delivered'
+                            ELSE status END;
                         ALTER TABLE shop.sav_orders ADD CONSTRAINT sav_orders_fulfillment_status_check
-                            CHECK (status IN ('validee', 'en_livraison', 'livree'));
+                            CHECK (status IN ('confirmed', 'in_transit', 'delivered'));
                     END IF;
                 END $$;
                 CREATE TABLE IF NOT EXISTS shop.sav_order_items (
@@ -162,7 +171,7 @@ class Shop:
                     action text NOT NULL,
                     size text,
                     color text,
-                    status text NOT NULL DEFAULT 'attente_boutique',
+                    status text NOT NULL DEFAULT 'awaiting_shop',
                     secret text NOT NULL,
                     FOREIGN KEY (order_id, line_number) REFERENCES shop.sav_order_items (order_id, line_number)
                 );
@@ -174,6 +183,32 @@ class Shop:
                     created_at timestamptz NOT NULL DEFAULT now(),
                     PRIMARY KEY (case_id, kind)
                 );
+                CREATE TABLE IF NOT EXISTS shop.sav_inquiries (
+                    case_id uuid PRIMARY KEY,
+                    customer_id text NOT NULL REFERENCES shop.sav_customers,
+                    question text NOT NULL,
+                    answer text,
+                    created_at timestamptz NOT NULL DEFAULT now(),
+                    answered_at timestamptz
+                );
+                ALTER TABLE shop.sav_requests ALTER COLUMN status SET DEFAULT 'awaiting_shop';
+                UPDATE shop.sav_requests SET status = CASE status
+                    WHEN 'stock_reserve' THEN 'stock_reserved'
+                    WHEN 'attente_boutique' THEN 'awaiting_shop'
+                    WHEN 'attente_client' THEN 'awaiting_customer'
+                    WHEN 'refuse_boutique' THEN 'rejected_by_shop'
+                    WHEN 'termine' THEN 'completed'
+                    WHEN 'annule' THEN 'cancelled' END
+                WHERE status IN ('stock_reserve', 'attente_boutique', 'attente_client', 'refuse_boutique', 'termine', 'annule');
+                UPDATE shop.sav_requests SET action = CASE action WHEN 'retour' THEN 'return' ELSE 'exchange' END
+                WHERE action IN ('retour', 'echange');
+                UPDATE shop.sav_returns SET action = CASE action WHEN 'retour' THEN 'return' ELSE 'exchange' END
+                WHERE action IN ('retour', 'echange');
+                UPDATE shop.sav_messages SET kind = CASE kind
+                    WHEN 'boutique' THEN 'shop_notification'
+                    WHEN 'refus' THEN 'rejection'
+                    WHEN 'recapitulatif' THEN 'summary' END
+                WHERE kind IN ('boutique', 'refus', 'recapitulatif');
             """)
 
     def customers(self) -> list[dict]:
@@ -226,7 +261,7 @@ class Shop:
             ],
         }
         active_order_count = sum(
-            other["id"] != order_id and other["status"] in {"validee", "en_livraison"}
+            other["id"] != order_id and other["status"] in {"confirmed", "in_transit"}
             for other in orders
         )
         return context, active_order_count
@@ -264,14 +299,14 @@ class Shop:
             "SELECT o.status, p.id AS product_id, p.color " + ORDER_ITEM,
             (state["customer_id"], state["order_id"], state["line_number"]),
         ).fetchone()
-        if item is None or item["status"] != "livree":
+        if item is None or item["status"] != "delivered":
             raise ValueError("Article livré introuvable.")
         return item
 
     def reserve_exchange(self, state: dict, thread_id: str) -> None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             item = self.delivered_item(conn, state)
-            if not self.insert_request(conn, state, thread_id, "stock_reserve"):
+            if not self.insert_request(conn, state, thread_id, "stock_reserved"):
                 return
             table, where, params = self.stock_location(item["product_id"], state["size"], state["color"], item["color"])
             reserved = conn.execute(f"UPDATE {table} SET quantity = quantity - 1 WHERE {where} AND quantity > 0", params)
@@ -280,14 +315,14 @@ class Shop:
 
     def register_request(self, state: dict, thread_id: str) -> None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
-            if state["action"] == "retour":
+            if state["action"] == "return":
                 self.delivered_item(conn, state)
-                self.insert_request(conn, state, thread_id, "attente_boutique")
+                self.insert_request(conn, state, thread_id, "awaiting_shop")
                 return
             request = conn.execute("""
                 UPDATE shop.sav_requests
-                SET status = CASE WHEN status = 'stock_reserve' THEN 'attente_boutique' ELSE status END
-                WHERE case_id = %s AND thread_id = %s AND action = 'echange'
+                SET status = CASE WHEN status = 'stock_reserved' THEN 'awaiting_shop' ELSE status END
+                WHERE case_id = %s AND thread_id = %s AND action = 'exchange'
             """, (state["case_id"], thread_id))
             if not request.rowcount:
                 raise ValueError("Réservation de stock introuvable.")
@@ -301,7 +336,7 @@ class Shop:
 
     def notify_shop(self, case_id: str) -> None:
         with psycopg.connect(self.dsn) as conn:
-            self.record_message(conn, case_id, "boutique", "Demande SAV à traiter", "Une demande attend votre décision.")
+            self.record_message(conn, case_id, "shop_notification", "Demande SAV à traiter", "Une demande attend votre décision.")
 
     def finish_step(self, case_id: str, status: str, reason: str = "") -> tuple[str | None, bool]:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
@@ -313,38 +348,39 @@ class Shop:
             if request is None:
                 raise ValueError("Demande SAV introuvable.")
             if request["status"] == status:
-                if status == "termine":
+                if status == "completed":
                     row = conn.execute("SELECT id FROM shop.sav_returns WHERE case_id = %s", (case_id,)).fetchone()
                     return row["id"], False
                 return None, False
 
-            expected = "attente_boutique" if status in {"refuse_boutique", "attente_client"} else "attente_client"
+            expected = "awaiting_shop" if status in {"rejected_by_shop", "awaiting_customer"} else "awaiting_customer"
             if request["status"] != expected:
                 raise ValueError("Cette étape du dossier est déjà close.")
             conn.execute("UPDATE shop.sav_requests SET status = %s WHERE case_id = %s", (status, case_id))
-            if status in {"refuse_boutique", "annule"} and request["action"] == "echange":
+            if status in {"rejected_by_shop", "cancelled"} and request["action"] == "exchange":
                 table, where, params = self.stock_location(
                     request["product_id"], request["size"], request["color"], request["original_color"],
                 )
                 conn.execute(f"UPDATE {table} SET quantity = quantity + 1 WHERE {where}", params)
 
-            detail = f"Commande {request['order_id']} · {request['action']} · {request['item_name']}"
+            action_label = "Retour" if request["action"] == "return" else "Échange"
+            detail = f"Commande {request['order_id']} · {action_label} · {request['item_name']}"
             if request["color"]:
                 detail += f" · {request['color']}"
             if request["size"]:
                 detail += f" · taille {request['size']}"
-            if status == "refuse_boutique":
-                self.record_message(conn, case_id, "refus", "Demande SAV refusée", f"{detail}\nMotif : {reason}")
-            if status == "attente_client":
+            if status == "rejected_by_shop":
+                self.record_message(conn, case_id, "rejection", "Demande SAV refusée", f"{detail}\nMotif : {reason}")
+            if status == "awaiting_customer":
                 self.record_message(conn, case_id, "confirmation", "Confirmez votre demande SAV", detail)
-            if status == "termine":
+            if status == "completed":
                 return_id = f"RET-{uuid4().hex[:12].upper()}"
                 conn.execute("""
                     INSERT INTO shop.sav_returns (case_id, id, order_id, line_number, action, size, color)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (case_id, return_id, request["order_id"], request["line_number"], request["action"],
                       request["size"], request["color"]))
-                self.record_message(conn, case_id, "recapitulatif", "Récapitulatif de votre demande SAV", f"{detail}\nRéférence : {return_id}")
+                self.record_message(conn, case_id, "summary", "Récapitulatif de votre demande SAV", f"{detail}\nRéférence : {return_id}")
                 return return_id, True
         return None, False
 
@@ -352,16 +388,37 @@ class Shop:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("""
                 SELECT r.case_id::text, r.customer_id, r.order_id, r.action, r.size, r.color, p.name
-                FROM shop.sav_requests r JOIN shop.sav_messages m ON m.case_id = r.case_id AND m.kind = 'boutique'
+                FROM shop.sav_requests r JOIN shop.sav_messages m ON m.case_id = r.case_id AND m.kind = 'shop_notification'
                 JOIN shop.sav_order_items i USING (order_id, line_number)
                 JOIN shop.sav_products p ON p.id = i.product_id
-                WHERE r.status = 'attente_boutique' AND strpos(r.thread_id, ':') > 0 ORDER BY m.created_at
+                WHERE r.status = 'awaiting_shop' AND strpos(r.thread_id, ':') > 0 ORDER BY m.created_at
             """).fetchall()
+
+    def submit_inquiry(self, case_id: str, customer_id: str, question: str) -> None:
+        with psycopg.connect(self.dsn) as conn:
+            conn.execute("""
+                INSERT INTO shop.sav_inquiries (case_id, customer_id, question)
+                VALUES (%s, %s, %s) ON CONFLICT (case_id) DO NOTHING
+            """, (case_id, customer_id, question))
+
+    def unanswered_inquiries(self) -> list[dict]:
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            return conn.execute("""
+                SELECT case_id::text, customer_id, question
+                FROM shop.sav_inquiries WHERE answered_at IS NULL ORDER BY created_at
+            """).fetchall()
+
+    def answer_inquiry(self, case_id: str, answer: str) -> bool:
+        with psycopg.connect(self.dsn) as conn:
+            return bool(conn.execute("""
+                UPDATE shop.sav_inquiries SET answer = %s, answered_at = COALESCE(answered_at, now())
+                WHERE case_id = %s AND (answer IS NULL OR answer = %s)
+            """, (answer, case_id, answer)).rowcount)
 
     def request_thread(self, case_id: str, decision: str | None = None, signature: str = "") -> str | None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             request = conn.execute(
-                "SELECT thread_id, secret FROM shop.sav_requests WHERE case_id = %s AND status <> 'stock_reserve'",
+                "SELECT thread_id, secret FROM shop.sav_requests WHERE case_id = %s AND status <> 'stock_reserved'",
                 (case_id,),
             ).fetchone()
         if request and (decision is None or hmac.compare_digest(
@@ -377,18 +434,22 @@ class Shop:
     def mailbox(self, customer_id: str) -> list[dict]:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             messages = conn.execute("""
-                SELECT r.case_id::text, r.secret, r.status, m.kind, m.subject, m.body
+                SELECT r.case_id::text, r.secret, r.status, m.kind, m.subject, m.body, m.created_at
                 FROM shop.sav_messages m JOIN shop.sav_requests r USING (case_id)
-                WHERE r.customer_id = %s AND m.kind <> 'boutique'
+                WHERE r.customer_id = %s AND m.kind <> 'shop_notification'
                     AND strpos(r.thread_id, ':') > 0
-                ORDER BY m.created_at DESC
-            """, (customer_id,)).fetchall()
+                UNION ALL
+                SELECT NULL, NULL, NULL, 'inquiry', 'Réponse du SAV', answer, answered_at
+                FROM shop.sav_inquiries WHERE customer_id = %s AND answered_at IS NOT NULL
+                ORDER BY created_at DESC
+            """, (customer_id, customer_id)).fetchall()
         for message in messages:
+            message.pop("created_at")
             secret = message.pop("secret")
             case_id = message.pop("case_id")
-            if message.pop("status") == "attente_client" and message["kind"] == "confirmation":
+            if message.pop("status") == "awaiting_customer" and message["kind"] == "confirmation":
                 message["links"] = {
-                    decision: f"/sav/reponse/{case_id}/{decision}/{self.sign_decision(secret, case_id, decision)}"
-                    for decision in ("confirmer", "refuser")
+                    decision: f"/support/reply/{case_id}/{decision}/{self.sign_decision(secret, case_id, decision)}"
+                    for decision in ("confirm", "decline")
                 }
         return messages

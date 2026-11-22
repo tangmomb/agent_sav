@@ -51,7 +51,7 @@ set "STEP=Demarrer la boutique"
 start "Boutique Maison Orme" /min "%PYTHON%" -m agent_sav web || goto :error
 
 set "STEP=Attendre la boutique sur le port 8000"
-call :wait_for_http "%SHOP_URL%/api/clients" || goto :error
+call :wait_for_http "%SHOP_URL%/api/customers" || goto :error
 
 set "STEP=Demarrer le serveur Studio"
 rem Le client LangSmith effectue des appels synchrones pendant le tracage local.
