@@ -11,9 +11,10 @@ The agent first finds out what the customer wants, then asks only for what that 
         └─ return / exchange → register_request → shop_review
 """
 
-from typing import Literal
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import StringConstraints
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
@@ -33,6 +34,17 @@ class State(MessagesState, total=False):
     color: str | None  # exchange
     question: str | None  # information
     status: str  # where the request stands, once it is complete
+
+
+# What each pause expects on resume. Studio shows them as forms; LangGraph rejects other values.
+class CustomerReply(TypedDict):
+    message: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    id: NotRequired[str]  # the chat's message id, so a resent message is not handled twice
+
+
+class ShopDecision(TypedDict):
+    approved: bool
+    reason: NotRequired[str]  # required to refuse
 
 
 class LostResponse(TimeoutError):
@@ -103,10 +115,8 @@ def build_graph(checkpointer, shop: Shop, *, simulate_timeout: bool = False):
         return {**request, "messages": [AIMessage(content=question)] if question else []}
 
     def ask(state: State) -> State:
-        """Waits for the customer's answer: the text itself, or {"message": text, "id": message id} from the chat."""
-        reply = interrupt({"question": str(state["messages"][-1].text)})
-        if isinstance(reply, str):
-            reply = {"message": reply}
+        """Waits for the customer's answer to the last question."""
+        reply = interrupt({"question": str(state["messages"][-1].text)}, response_schema=CustomerReply)
         return {"messages": [HumanMessage(content=reply["message"], id=reply.get("id"))]}
 
     def route(state: State) -> str:
@@ -132,8 +142,8 @@ def build_graph(checkpointer, shop: Shop, *, simulate_timeout: bool = False):
         ]}
 
     def shop_review(state: State, config: RunnableConfig) -> State:
-        """Waits for the shop: {"approved": bool, "reason": str}. The customer gets the outcome by email."""
-        decision = interrupt({"waiting_for": "shop"})
+        """Waits for the shop's decision. The customer gets the outcome by email."""
+        decision = interrupt({"waiting_for": "shop"}, response_schema=ShopDecision)
         if not decision["approved"]:
             shop.finish_step(thread(config), "rejected_by_shop", decision.get("reason", ""))
             return {"status": "rejected_by_shop"}

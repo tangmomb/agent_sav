@@ -257,7 +257,8 @@ def serve(dsn: str, port: int) -> None:
                         graph.invoke({"messages": [{"type": "human", "content": message, "id": message_id}]},
                                      config, durability="sync")
                     elif snapshot.next == ("ask",):
-                        graph.invoke(Command(resume={"message": message, "id": message_id}), config, durability="sync")
+                        reply = {"message": message} | ({"id": message_id} if message_id else {})
+                        graph.invoke(Command(resume=reply), config, durability="sync")
                 snapshot = graph.get_state(config)
             answer = next(str(m.text) for m in reversed(snapshot.values["messages"]) if isinstance(m, AIMessage))
             if snapshot.next == ("ask",):
