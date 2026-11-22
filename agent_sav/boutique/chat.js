@@ -8,7 +8,6 @@ const sendButton = document.querySelector("#send-chat");
 let log = document.querySelector("#chat-log");
 
 const conversations = new Map();
-const sizes = ["S", "M", "L", "XL"];
 let active;
 
 export function openChat(customerId, customerName) {
@@ -57,17 +56,8 @@ function say(chat, text, speaker = "agent") {
 }
 
 function showResult(chat, result) {
-  const lines = [result.question || result.messages?.at(-1)?.content].filter(Boolean);
-  if (result.options?.length) {
-    lines.push("", ...result.options.map((option, index) => `${index + 1}. ${option}`));
-  }
-  if (result.ordered_size) {
-    lines.push("Tailles : " + sizes.filter((size) => size !== result.ordered_size).join(", ") + ".");
-  }
-  if (result.colors?.length) {
-    lines.push("Coloris : " + result.colors.join(", ") + ".");
-  }
-  if (lines.length) say(chat, lines.join("\n"));
+  const text = result.question || result.messages?.at(-1)?.content;
+  if (text) say(chat, text);
 }
 
 function updateComposer(chat) {

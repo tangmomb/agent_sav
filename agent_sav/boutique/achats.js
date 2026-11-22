@@ -74,7 +74,7 @@ async function loadCustomers() {
   retry.hidden = true;
   try {
     const {customers} = await getJSON("/api/customers");
-    select.replaceChildren(...customers.map(({id, name}) => new Option(name, id)));
+    select.replaceChildren(...customers.map(({id, first_name, name}) => new Option(`${first_name} ${name}`, id)));
     if (!customers.length) {
       status.textContent = "Aucun compte de démonstration disponible.";
       return;

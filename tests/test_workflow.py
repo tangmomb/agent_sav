@@ -109,7 +109,7 @@ def new_thread(customer="CLI-001", order="DEMO-1001"):
 def stock(database, size="M"):
     with psycopg.connect(database) as db:
         return db.execute(
-            "SELECT quantity FROM shop.sav_stock WHERE product_id = 'ART-001' AND size = %s", (size,),
+            "SELECT quantity FROM shop.stock WHERE product_id = 'ART-001' AND size = %s", (size,),
         ).fetchone()[0]
 
 
@@ -357,7 +357,7 @@ def test_chat_article_correction_drops_only_the_previous_variant(database, bouti
     if correction != "Le T-shirt en M.":
         assert (result["status"], result["item_id"]) == ("variant_needed", "ITEM-DEMO-1001-2")
         with psycopg.connect(database) as db:
-            assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+            assert db.execute("SELECT count(*) FROM shop.requests").fetchone() == (0,)
         result = send_to_sav(boutique, thread_id=thread, message="En M.")
 
     assert (result["status"], result["item_id"], result["size"]) == ("intent_confirmation_needed", "ITEM-DEMO-1001-2", "M")
@@ -389,7 +389,7 @@ def test_ambiguous_variant_and_intent_correction(database, boutique):
     assert result["request_summary"]["action"] == "return"
     assert result["request_summary"]["size"] is None
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM shop.requests").fetchone() == (0,)
     with open_checkpointer(database) as checkpointer:
         graph = build_graph(checkpointer, Shop(database), collect_demo, respond=reply_demo, select=select_demo)
         config = {"configurable": {"thread_id": thread}}
@@ -433,7 +433,7 @@ def test_exchange_resumes_after_commit_without_duplicate(database):
     assert stock(database) == 19
 
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM shop.requests WHERE reference IS NOT NULL").fetchone() == (0,)
 
     validated = json.loads(cli(database, "decide", thread, "yes"))
     assert validated["status"] == "awaiting_customer"
@@ -441,14 +441,14 @@ def test_exchange_resumes_after_commit_without_duplicate(database):
     cli(database, "reply", link, "--simulate-timeout", code=2)
 
     with psycopg.connect(database) as db:
-        (reference,) = db.execute("SELECT id FROM shop.sav_returns").fetchone()
+        (reference,) = db.execute("SELECT reference FROM shop.requests WHERE reference IS NOT NULL").fetchone()
     resumed = json.loads(cli(database, "resume", thread))
     assert resumed["status"] == "completed"
     assert resumed["return_id"] == reference
     assert stock(database) == 19
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT id FROM shop.sav_returns").fetchall() == [(reference,)]
-        assert db.execute("SELECT kind FROM shop.sav_messages ORDER BY kind").fetchall() == [
+        assert db.execute("SELECT reference FROM shop.requests WHERE reference IS NOT NULL").fetchall() == [(reference,)]
+        assert db.execute("SELECT kind FROM shop.messages ORDER BY kind").fetchall() == [
             ("confirmation",), ("shop_notification",), ("summary",),
         ]
 
@@ -524,9 +524,9 @@ def test_chat_article_then_variant_shop_and_signed_confirmation(database, boutiq
     assert forged.value.code == 404
     assert "Confirmer la demande" in get_page(boutique, link)
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM shop.requests WHERE reference IS NOT NULL").fetchone() == (0,)
         case_id = link.split("/")[-3]
-        (secret,) = db.execute("SELECT secret FROM shop.sav_requests WHERE case_id = %s", (case_id,)).fetchone()
+        (secret,) = db.execute("SELECT secret FROM shop.requests WHERE case_id = %s", (case_id,)).fetchone()
 
     signature = Shop.sign_decision(secret, case_id, "confirmer")
     legacy_link = f"/sav/reponse/{case_id}/confirmer/{signature}"
@@ -535,9 +535,9 @@ def test_chat_article_then_variant_shop_and_signed_confirmation(database, boutiq
     assert "demande est confirmée" in post_form(boutique, legacy_link)
     assert "Récapitulatif" in get_page(boutique, "/support/mailbox/CLI-001")
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT item_id, size, color FROM shop.sav_returns").fetchall() == [("ITEM-DEMO-1001-1", "S", "Noir")]
+        assert db.execute("SELECT item_id, size, color FROM shop.requests WHERE reference IS NOT NULL").fetchall() == [("ITEM-DEMO-1001-1", "S", "Noir")]
         assert db.execute(
-            "SELECT quantity FROM shop.sav_color_stock WHERE product_id = 'ART-001' AND size = 'S' AND color = 'Noir'"
+            "SELECT quantity FROM shop.color_stock WHERE product_id = 'ART-001' AND size = 'S' AND color = 'Noir'"
         ).fetchone() == (9,)
 
 
@@ -563,8 +563,8 @@ def test_refusal_releases_exchange_stock(database, boutique, shop_refusal):
         status = "cancelled"
     assert stock(database) == 20
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT status FROM shop.sav_requests WHERE thread_id = %s", (thread,)).fetchone() == (status,)
-        assert db.execute("SELECT count(*) FROM shop.sav_returns").fetchone() == (0,)
+        assert db.execute("SELECT status FROM shop.requests WHERE thread_id = %s", (thread,)).fetchone() == (status,)
+        assert db.execute("SELECT count(*) FROM shop.requests WHERE reference IS NOT NULL").fetchone() == (0,)
 
 
 def test_stock_failure_offers_return_without_notifying_shop(database, boutique):
@@ -575,7 +575,7 @@ def test_stock_failure_offers_return_without_notifying_shop(database, boutique):
     assert "retourner" in out["question"]
     assert "Aucune demande" in get_page(boutique, "/shop/support")
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM shop.requests").fetchone() == (0,)
     declined_thread = new_thread()
     send_to_sav(boutique, thread_id=declined_thread, item_id="ITEM-DEMO-1001-1", message="Je veux un échange en XL.")
     assert confirm_intent(boutique, declined_thread)["status"] == "out_of_stock"
@@ -589,12 +589,12 @@ def test_stock_failure_offers_return_without_notifying_shop(database, boutique):
     post_form(boutique, shop_route(boutique), decision="yes")
     post_form(boutique, mail_link(boutique, "confirm"))
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT item_id, action, size FROM shop.sav_returns").fetchall() == [("ITEM-DEMO-1001-1", "return", None)]
+        assert db.execute("SELECT item_id, action, size FROM shop.requests WHERE reference IS NOT NULL").fetchall() == [("ITEM-DEMO-1001-1", "return", None)]
 
 
 def test_two_requests_cannot_reserve_the_last_unit(database, boutique, monkeypatch):
     with psycopg.connect(database) as db:
-        db.execute("UPDATE shop.sav_stock SET quantity = 1 WHERE product_id = 'ART-001' AND size = 'M'")
+        db.execute("UPDATE shop.stock SET quantity = 1 WHERE product_id = 'ART-001' AND size = 'M'")
     both_at_stock_check = Barrier(2, timeout=5)
     original = Shop.reserve_exchange
 
@@ -613,8 +613,8 @@ def test_two_requests_cannot_reserve_the_last_unit(database, boutique, monkeypat
     assert {result["status"] for result in results} == {"awaiting_shop", "out_of_stock"}
     assert stock(database) == 0
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (1,)
-        assert db.execute("SELECT count(*) FROM shop.sav_messages").fetchone() == (1,)
+        assert db.execute("SELECT count(*) FROM shop.requests").fetchone() == (1,)
+        assert db.execute("SELECT count(*) FROM shop.messages").fetchone() == (1,)
 
 
 def test_purchase_history_and_case_are_scoped_to_customer_and_order(boutique):
@@ -658,8 +658,8 @@ def test_information_is_forwarded_once_and_boutique_reply_reaches_mailbox(databa
     assert not sent.get("awaiting_message")
     assert send_to_sav(boutique, **reply) == sent
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT customer_id, question FROM shop.sav_inquiries").fetchall() == [("CLI-003", inquiry)]
-        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+        assert db.execute("SELECT customer_id, question FROM shop.requests WHERE action = 'information'").fetchall() == [("CLI-003", inquiry)]
+        assert db.execute("SELECT count(*) FROM shop.requests").fetchone() == (0,)
 
     shop_page = get_page(boutique, "/shop/support")
     assert inquiry in shop_page
@@ -692,10 +692,11 @@ def test_global_chat_checks_order_ownership(database, boutique):
         "intent_confirmation_needed", "DEMO-1001", "ITEM-DEMO-1001-1",
     )
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM shop.requests").fetchone() == (0,)
 
 
 def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
+    inquiry_id = uuid4()
     cli(database, "init")
     opened = json.loads(cli(database, "open", "Je veux un échange en M.", "--item-id", "ITEM-DEMO-1001-1", "--demo", "exchange"))
     thread = opened["thread_id"]
@@ -704,42 +705,57 @@ def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
     completed = json.loads(cli(database, "reply", decision["email_links"]["confirm"]))
 
     with psycopg.connect(database) as db:
-        (return_id,) = db.execute("SELECT id FROM shop.sav_returns").fetchone()
-        db.execute("DROP TABLE shop.sav_messages, shop.sav_requests, shop.sav_color_stock")
-        db.execute("ALTER TABLE shop.sav_returns DROP COLUMN color")
+        (return_id,) = db.execute("SELECT reference FROM shop.requests WHERE reference IS NOT NULL").fetchone()
+        db.execute("""
+            CREATE TABLE shop.returns (
+                case_id uuid PRIMARY KEY, id text UNIQUE NOT NULL, order_id text NOT NULL, action text NOT NULL, size text
+            );
+            INSERT INTO shop.returns SELECT case_id, reference, order_id, 'echange', size
+                FROM shop.requests WHERE reference IS NOT NULL;
+            CREATE TABLE shop.inquiries (
+                case_id uuid PRIMARY KEY, customer_id text NOT NULL REFERENCES shop.customers, question text NOT NULL,
+                answer text, created_at timestamptz NOT NULL DEFAULT now(), answered_at timestamptz
+            );
+        """)
+        db.execute(
+            "INSERT INTO shop.inquiries (case_id, customer_id, question, answer, answered_at) VALUES (%s, %s, %s, %s, now())",
+            (inquiry_id, "CLI-002", "Ouvrez-vous le dimanche ?", "Non, du lundi au samedi."),
+        )
+        db.execute("DROP TABLE shop.messages, shop.requests, shop.color_stock")
         in_transit = db.execute(
-            "SELECT id, ordered_on FROM shop.sav_orders WHERE status = 'in_transit' ORDER BY id"
+            "SELECT id, ordered_on FROM shop.orders WHERE status = 'in_transit' ORDER BY id"
         ).fetchall()
         legacy_items = db.execute("""
             SELECT order_id, product_id, size, price_cents
-            FROM shop.sav_order_items WHERE item_id = 'ITEM-' || order_id || '-1' AND order_id IN (
-                SELECT id FROM shop.sav_orders WHERE status <> 'confirmed'
+            FROM shop.order_items WHERE item_id = 'ITEM-' || order_id || '-1' AND order_id IN (
+                SELECT id FROM shop.orders WHERE status <> 'confirmed'
             ) ORDER BY order_id
         """).fetchall()
-        db.execute("ALTER TABLE shop.sav_returns DROP COLUMN item_id")
         db.execute("""
-            ALTER TABLE shop.sav_orders ADD COLUMN product_id text REFERENCES shop.sav_products,
+            ALTER TABLE shop.orders ADD COLUMN product_id text REFERENCES shop.products,
                 ADD COLUMN size text;
-            UPDATE shop.sav_orders o SET product_id = i.product_id, size = i.size
-                FROM shop.sav_order_items i WHERE i.order_id = o.id AND i.item_id = 'ITEM-' || o.id || '-1';
-            ALTER TABLE shop.sav_orders ALTER COLUMN product_id SET NOT NULL;
-            DROP TABLE shop.sav_order_items;
+            UPDATE shop.orders o SET product_id = i.product_id, size = i.size
+                FROM shop.order_items i WHERE i.order_id = o.id AND i.item_id = 'ITEM-' || o.id || '-1';
+            ALTER TABLE shop.orders ALTER COLUMN product_id SET NOT NULL;
+            DROP TABLE shop.order_items;
         """)
-        db.execute("ALTER TABLE shop.sav_orders DROP CONSTRAINT sav_orders_fulfillment_status_check")
-        db.execute("DELETE FROM shop.sav_orders WHERE status = 'confirmed'")
+        db.execute("ALTER TABLE shop.orders DROP CONSTRAINT orders_fulfillment_status_check")
+        db.execute("DELETE FROM shop.orders WHERE status = 'confirmed'")
         db.execute("""
-            UPDATE shop.sav_orders SET status = CASE status WHEN 'in_transit' THEN 'expediee' ELSE 'livree' END
+            UPDATE shop.orders SET status = CASE status WHEN 'in_transit' THEN 'expediee' ELSE 'livree' END
         """)
         db.execute("""
-            ALTER TABLE shop.sav_orders ADD CONSTRAINT sav_orders_status_check
+            ALTER TABLE shop.orders ADD CONSTRAINT sav_orders_status_check
                 CHECK (status IN ('livree', 'expediee'))
         """)
-        db.execute("UPDATE shop.sav_returns SET action = 'echange'")
-        for schema, tables in (("shop", SHOP_TABLES), ("langgraph", CHECKPOINT_TABLES)):
+        legacy_shop = ("customers", "products", "orders", "stock", "returns", "inquiries")
+        for schema, tables in (("shop", legacy_shop), ("langgraph", CHECKPOINT_TABLES)):
             for table in tables:
-                if table == "sav_order_items":
-                    continue
                 db.execute(sql.SQL("ALTER TABLE {} SET SCHEMA public").format(sql.Identifier(schema, table)))
+                if schema == "shop":
+                    db.execute(sql.SQL("ALTER TABLE {} RENAME TO {}").format(
+                        sql.Identifier("public", table), sql.Identifier(f"sav_{table}"),
+                    ))
             db.execute(sql.SQL("DROP SCHEMA {}").format(sql.Identifier(schema)))
         db.execute("CREATE TABLE public.unrelated (id integer)")
 
@@ -753,24 +769,32 @@ def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
             "SELECT schemaname, tablename FROM pg_tables WHERE schemaname IN ('shop', 'langgraph', 'public')"
         ).fetchall())
         assert tables == (
-            {("shop", table) for table in (*SHOP_TABLES, "sav_requests", "sav_messages", "sav_color_stock")}
+            {("shop", table) for table in SHOP_TABLES}
             | {("langgraph", table) for table in CHECKPOINT_TABLES}
             | {("public", "unrelated")}
         )
-        assert db.execute("SELECT id, item_id, action FROM shop.sav_returns").fetchall() == [(return_id, "ITEM-DEMO-1001-1", "exchange")]
+        assert db.execute(
+            "SELECT reference, item_id, action, status FROM shop.requests WHERE reference IS NOT NULL"
+        ).fetchall() == [(return_id, "ITEM-DEMO-1001-1", "exchange", "completed")]
+        assert db.execute(
+            "SELECT case_id, question, status FROM shop.requests WHERE action = 'information'"
+        ).fetchall() == [(inquiry_id, "Ouvrez-vous le dimanche ?", "completed")]
         assert db.execute("""
             SELECT order_id, product_id, size, price_cents
-            FROM shop.sav_order_items WHERE item_id = 'ITEM-' || order_id || '-1' AND order_id IN (
-                SELECT id FROM shop.sav_orders WHERE status <> 'confirmed'
+            FROM shop.order_items WHERE item_id = 'ITEM-' || order_id || '-1' AND order_id IN (
+                SELECT id FROM shop.orders WHERE status <> 'confirmed'
             ) ORDER BY order_id
         """).fetchall() == legacy_items
         assert db.execute(
-            "SELECT id, ordered_on FROM shop.sav_orders WHERE status = 'in_transit' ORDER BY id"
+            "SELECT id, ordered_on FROM shop.orders WHERE status = 'in_transit' ORDER BY id"
         ).fetchall() == in_transit
-        assert db.execute("SELECT count(*) FROM shop.sav_orders WHERE status = 'confirmed'").fetchone() == (5,)
+        assert db.execute("SELECT count(*) FROM shop.orders WHERE status = 'confirmed'").fetchone() == (5,)
         assert db.execute(
-            "SELECT quantity FROM shop.sav_stock WHERE product_id = 'ART-001' AND size = 'M'"
+            "SELECT quantity FROM shop.stock WHERE product_id = 'ART-001' AND size = 'M'"
         ).fetchone() == (19,)
+    assert Shop(database).mailbox("CLI-002") == [
+        {"kind": "answer", "subject": "Réponse du SAV", "body": "Non, du lundi au samedi."},
+    ]
 
 
 def test_migrates_line_based_articles_and_saved_requests(database):
@@ -786,7 +810,7 @@ def test_migrates_line_based_articles_and_saved_requests(database):
     return_id, _ = shop.finish_step(case_id, "completed")
 
     with psycopg.connect(database) as db:
-        for table in ("sav_returns", "sav_requests", "sav_order_items"):
+        for table in ("requests", "order_items"):
             db.execute(sql.SQL("""
                 ALTER TABLE shop.{table} ADD COLUMN line_number integer;
                 UPDATE shop.{table} SET line_number = split_part(item_id, '-', 4)::integer;
@@ -794,18 +818,16 @@ def test_migrates_line_based_articles_and_saved_requests(database):
                 ALTER TABLE shop.{table} DROP COLUMN item_id;
             """).format(table=sql.Identifier(table)))
         db.execute("""
-            ALTER TABLE shop.sav_order_items ADD PRIMARY KEY (order_id, line_number);
-            ALTER TABLE shop.sav_requests ADD FOREIGN KEY (order_id, line_number)
-                REFERENCES shop.sav_order_items (order_id, line_number);
-            ALTER TABLE shop.sav_returns ADD FOREIGN KEY (order_id, line_number)
-                REFERENCES shop.sav_order_items (order_id, line_number);
+            ALTER TABLE shop.order_items ADD PRIMARY KEY (order_id, line_number);
+            ALTER TABLE shop.requests ADD FOREIGN KEY (order_id, line_number)
+                REFERENCES shop.order_items (order_id, line_number);
         """)
 
     initialize_database(database)
     initialize_database(database)
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT item_id FROM shop.sav_requests WHERE case_id = %s", (case_id,)).fetchone() == (item_id,)
-        assert db.execute("SELECT item_id FROM shop.sav_returns WHERE id = %s", (return_id,)).fetchone() == (item_id,)
+        assert db.execute("SELECT item_id FROM shop.requests WHERE case_id = %s", (case_id,)).fetchone() == (item_id,)
+        assert db.execute("SELECT item_id FROM shop.requests WHERE reference = %s", (return_id,)).fetchone() == (item_id,)
         assert not db.execute("""
             SELECT 1 FROM information_schema.columns WHERE table_schema = 'shop' AND column_name = 'line_number'
         """).fetchall()

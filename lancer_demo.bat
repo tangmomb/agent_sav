@@ -9,7 +9,7 @@ set "PGWEB_URL=http://127.0.0.1:8081"
 set "STUDIO_URL=http://127.0.0.1:2024"
 set "PGWEB_CONTAINER=agent-sav-pgweb"
 
-set "STEP=Trouver Python dans .venv (voir le README pour l'installation)"
+set "STEP=Trouver Python dans .venv (installer requirements.txt)"
 if not exist "%PYTHON%" goto :error
 set "STEP=Trouver LangGraph CLI (installer requirements-dev.txt)"
 if not exist "%LANGGRAPH%" goto :error
