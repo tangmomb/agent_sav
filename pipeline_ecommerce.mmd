@@ -1,6 +1,5 @@
 flowchart TD
     START([START]) --> collection["collect<br/>LLM : intention, commande, article, variante<br/>Questions via interrupt"]
-    collection -->|continue_collection| collection
     collection -->|information| write_question["request_support_question<br/>Saisie et transmission de la question"]
     write_question --> END
     collection -->|request_complete| review["validate_intent<br/>Récapitulatif et accord du client"]

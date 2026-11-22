@@ -57,7 +57,7 @@ function say(chat, text, speaker = "agent") {
 }
 
 function showResult(chat, result) {
-  const lines = [result.question || result.customer_message].filter(Boolean);
+  const lines = [result.question || result.messages?.at(-1)?.content].filter(Boolean);
   if (result.options?.length) {
     lines.push("", ...result.options.map((option, index) => `${index + 1}. ${option}`));
   }

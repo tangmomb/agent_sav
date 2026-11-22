@@ -37,7 +37,7 @@ class ClientReply(BaseModel):
 
 
 class CollectionContext(TypedDict):
-    orders: list[dict]
+    customer_orders: list[dict]
     draft: dict
     discussion_thread: list[dict[str, str]]
 
@@ -47,7 +47,7 @@ class CollectionTurn(BaseModel):
 
     action: Literal["information", "return", "exchange", "uncertain"] | None = None
     order_id: str | None = None
-    line: list[int] = Field(default_factory=list)
+    item_id: str | None = None
     size: list[Literal["S", "M", "L", "XL"]] = Field(default_factory=list)
     color: list[str] = Field(default_factory=list)
     next_question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)] | None = None
@@ -154,8 +154,8 @@ def classify_with_mistral(
     if not api_key:
         raise ValueError("Renseigne MISTRAL_API_KEY dans .env.")
 
-    with Mistral(api_key=api_key) as client:
-        return client.chat.parse(model=MODEL, messages=messages, response_format=schema)
+    with Mistral(api_key=api_key, timeout_ms=30000) as client:
+        return client.chat.parse(model=MODEL, messages=messages, response_format=schema, max_tokens=1536)
 
 
 def parse_response(
@@ -176,18 +176,29 @@ def collect_mistral(message: str, context: CollectionContext) -> CollectionTurn:
         "context": {
             "collected_details": context["draft"],
             "discussion_thread": context["discussion_thread"],
-            "orders": context["orders"],
+            "customer_orders": context["customer_orders"],
         },
     }
     return parse_response([
         {"role": "system", "content": (
-            "Extrais les infos que tu peux depuis cet échange SAV. "
-            "Le but est d’obtenir l’action, puis la commande et l’article pour un retour ou un échange, "
-            "et la taille ou le coloris souhaité pour un échange. "
-            "Tiens compte des collected_details pour ne demander que les précisions utiles. "
-            "Pour un renseignement, mets action à information et next_question à null. "
-            "Dans les autres cas, si une précision manque, formule une seule question dans next_question, sinon mets null. "
-            "Si l’utilisateur te salue, réponds brièvement et indique ce qu'il faut préciser. "
+            "Extrais du dernier message du client les informations nouvelles ou corrigées pour sa demande SAV. "
+            "Utilise discussion_thread et collected_details pour comprendre les réponses courtes et les références. "
+            "Les champs order_id et item_id identifient la commande et l’article acheté. "
+            "Si un seul article correspond, copie exactement son item_id depuis customer_orders. "
+            "Si plusieurs articles correspondent, laisse item_id à null. "
+            "Les champs size et color contiennent uniquement les tailles et coloris demandés pour le remplacement. "
+            "Si « Le pull vert » correspond à un article, renvoie son item_id "
+            "et laisse size et color vides. "
+            "« Du M » en réponse à la question sur la variante donne size égal à [\"M\"], item_id à null et color vide. "
+            "Utilise null si une valeur simple est absente et [] si aucun élément ne correspond. "
+            "Renseigne action si le client exprime une intention. Pour une simple salutation, "
+            "mets action à uncertain, laisse les listes vides et demande brièvement comment l’aider. "
+            "Si le client demande un renseignement ou dit « J’ai une question », "
+            "mets action à information et next_question à null. "
+            "Pour un retour ou un échange, pose au plus une question courte en français dans next_question. "
+            "Demande la première précision manquante parmi la commande, l’article, puis la taille ou le coloris souhaité "
+            "pour un échange. Une taille ou un coloris suffit. "
+            "Si les informations déjà recueillies suffisent, mets next_question à null. "
             "N’annonce ni validation ni disponibilité."
         )},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -269,7 +280,7 @@ def article_option(item: dict) -> str:
 def collect_demo(
     message: str, context: CollectionContext, *, interpret: Callable[[str, bool], Intent] = interpret_demo,
 ) -> CollectionTurn:
-    orders, draft = context["orders"], context["draft"]
+    orders, draft = context["customer_orders"], context["draft"]
     last_question = next((
         entry["content"] for entry in reversed(context["discussion_thread"]) if entry["role"] == "assistant"
     ), "")
@@ -295,15 +306,13 @@ def collect_demo(
             result.order_id = options[number - 1].split(" · ", 1)[0].removeprefix("#")
         return result
     order_id = result.order_id or draft["order_id"]
-    order = next((order for order in orders if order["id"] == order_id), None)
-    if order:
-        items = order["items"]
-        if draft["line_number"] is not None:
-            number = match_text_option(text, [item["name"] for item in items])
-        else:
-            number = select_demo(message, last_question, [article_option(item) for item in items])
-        if number is not None and 1 <= number <= len(items):
-            result.line = [items[number - 1]["line_number"]]
+    items = [item for order in orders if order["id"] == order_id for item in order["items"]]
+    if draft["item_id"] is not None:
+        number = match_text_option(text, [item["name"] for item in items])
+    else:
+        number = select_demo(message, last_question, [article_option(item) for item in items])
+    if number is not None and 1 <= number <= len(items):
+        result.item_id = items[number - 1]["item_id"]
     if selecting and not re.search(r"\b(?:en|vers)\s+(?:taille\s+|coloris\s+)?(?:xl|s|m|l|noir|blanc)\b", text):
         if (result.color or result.size) and not re.search(r"\bechang\w*\b", text):
             result.action = None
@@ -334,6 +343,8 @@ def select_mistral(message: str, question: str, options: list[str]) -> int | Non
 
 
 def select_demo(message: str, _question: str, options: list[str]) -> int | None:
+    if not options:
+        return None
     text = normalize(message)
     if options[0].startswith("Oui,") and options[-1].startswith("Non,"):
         if re.search(r"\b(?:non|annul\w*|abandonn\w*)\b|\bne\b.*\bpas\b", text):

@@ -117,7 +117,7 @@ def test_studio_graph_matches_excalidraw():
     from agent_sav.studio import graph
 
     assert set(graph.get_input_jsonschema()["properties"]) == {"messages"}
-    assert "line_number" in graph.get_output_jsonschema()["properties"]
+    assert "item_id" in graph.get_output_jsonschema()["properties"]
     assert set(graph.nodes["collect"].channels) == set(CollectionUpdate.__annotations__)
     state = {"messages": [HumanMessage(content="Bonjour", id="first"), AIMessage(content="Bonjour !")]}
     for node in graph.builder.nodes.values():
@@ -162,15 +162,15 @@ def test_studio_graph_matches_excalidraw():
     assert set(displayed.nodes) == set(nodes.values())
     assert {(edge.source, edge.target, edge.data) for edge in displayed.edges} == arrows
     assert {edge.target for edge in displayed.edges if edge.source == "collect"} == {
-        "collect", "validate_intent", "request_support_question",
+        "validate_intent", "request_support_question",
     }
 
 
 def test_collecter_cannot_write_downstream_fields():
     assert collection_update({
-        "action": "return", "line_number": 1, "approved": True, "reason": "motif",
+        "action": "return", "item_id": "ITEM-DEMO-1001-1", "approved": True, "reason": "motif",
         "return_id": "RET-1001", "demo_mode": True, "unknown": "value",
-    }) == {"action": "return", "line_number": 1}
+    }) == {"action": "return", "item_id": "ITEM-DEMO-1001-1"}
 
 
 def test_legacy_checkpoint_translates_state_and_reschedules_renamed_node():
@@ -178,16 +178,22 @@ def test_legacy_checkpoint_translates_state_and_reschedules_renamed_node():
     channel = "branch:to:attendre_confirmation_client"
     checkpoint["channel_values"] = {
         channel: None, "status": "attente_client", "action": "echange", "message_client": "Votre retour",
+        "order_id": "DEMO-1001", "line_number": 2, "items": [{"line_number": 2, "name": "Article"}],
     }
     checkpoint["channel_versions"] = {key: 1 for key in checkpoint["channel_values"]}
     checkpoint["versions_seen"] = {"attendre_confirmation_client": {channel: 0}}
     saved = CheckpointTuple({}, checkpoint, {}, pending_writes=[("old-task", "__interrupt__", ())])
 
     updated = translate_checkpoint(saved)
-    assert updated.checkpoint["channel_values"] == {
+    values = updated.checkpoint["channel_values"]
+    assert {key: value for key, value in values.items() if key != "messages"} == {
         "branch:to:wait_for_customer_confirmation": None,
-        "status": "awaiting_customer", "action": "exchange", "customer_message": "Votre retour",
+        "status": "awaiting_customer", "action": "exchange",
+        "order_id": "DEMO-1001", "item_id": "ITEM-DEMO-1001-2",
+        "items": [{"item_id": "ITEM-DEMO-1001-2", "name": "Article"}],
     }
+    assert isinstance(values["messages"][0], AIMessage)
+    assert values["messages"][0].content == "Votre retour"
     assert updated.checkpoint["versions_seen"] == {"wait_for_customer_confirmation": {
         "branch:to:wait_for_customer_confirmation": 0,
     }}
@@ -244,10 +250,10 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
     variant_question = "Dans quelle variante voulez-vous recevoir le pull ?"
     answers = iter((
         model.CollectionTurn(
-            action="exchange", size=[initial_size] if initial_size else [], line=[1] if initial_size else [],
+            action="exchange", size=[initial_size] if initial_size else [],
             next_question=order_question,
         ),
-        model.CollectionTurn(order_id="DEMO-1001", line=[] if initial_size else [1], next_question=variant_question),
+        model.CollectionTurn(order_id="DEMO-1001", item_id="ITEM-DEMO-1001-1", next_question=variant_question),
         model.CollectionTurn(size=["M"], next_question="Quel coloris souhaitez-vous ?"),
     ))
 
@@ -262,6 +268,8 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
             assert trace["messages"][-1]["context"]["shop_facts"] == payload["shop_facts"]
             assert trace["messages"][-1]["content"] == (payload["latest_customer_message"] or "")
             event = payload["shop_facts"]
+            if event["status"] == "intent_confirmation_needed":
+                assert payload["latest_customer_message"] is None
             reply_events.append(event)
             return model.ClientReply(message={
                 "awaiting_shop": "La boutique a reçu votre demande.",
@@ -279,13 +287,12 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
         InMemorySaver(), shop, model.collect_mistral, respond=model.reply_mistral, select=select_demo,
     )
     config = {"configurable": {"thread_id": f"CLI-001:{uuid4()}"}}
-    message = "Je voudrais un échange en M pour la ligne 1." if initial_size else "Je voudrais un échange."
+    message = "Je voudrais un échange en M." if initial_size else "Je voudrais un échange."
     graph.invoke({"messages": [{"type": "human", "content": message}]}, config)
     pending = graph.get_state(config)
     assert pending.next == ("collect",)
-    assert pending.values["action"] == "exchange"
-    assert pending.values["candidates"]["size"] == ([initial_size] if initial_size else [])
-    assert pending.values["candidates"]["line"] == ([1] if initial_size else [])
+    assert pending.interrupts[0].value["action"] == "exchange"
+    assert pending.interrupts[0].value["size"] == initial_size
     schema = pending.interrupts[0].response_schema
     assert set(schema["properties"]) == {"message"}
     assert schema["required"] == ["message"]
@@ -296,10 +303,10 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
     first_message = message
     assert stock(database) == 20
 
-    message = "La commande DEMO-1001." if initial_size else "Le pull de la commande DEMO-1001."
+    message = "Le pull de la commande DEMO-1001."
     graph.invoke(Command(resume={"message": message}), config)
     context = json.loads(prompts[1][-1]["content"])["context"]
-    assert set(context) == {"collected_details", "discussion_thread", "orders"}
+    assert set(context) == {"collected_details", "discussion_thread", "customer_orders"}
     question_with_options = "\n".join([order_question, "", *(f"{i}. {option}" for i, option in enumerate(options, 1))])
     assert context["discussion_thread"] == [
         {"role": "user", "content": first_message}, {"role": "assistant", "content": question_with_options},
@@ -314,8 +321,8 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
         assert pending.interrupts[0].value["status"] == "variant_needed"
         assert pending.interrupts[0].value["question"] == variant_question
         assert not reply_events
-        assert pending.values["line_number"] == 1
-        assert pending.values["order_id"] == "DEMO-1001"
+        assert pending.interrupts[0].value["item_id"] == "ITEM-DEMO-1001-1"
+        assert pending.interrupts[0].value["order_id"] == "DEMO-1001"
         assert stock(database) == 20
         graph.invoke(Command(resume={"message": "En M."}), config)
 
@@ -327,9 +334,10 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
     graph.invoke(Command(resume={"message": "Oui, je confirme."}), config)
     saved = graph.get_state(config)
     assert saved.next == ("wait_for_shop_approval",)
-    assert saved.values["customer_message"] == "La boutique a reçu votre demande."
-    assert (saved.values["order_id"], saved.values["line_number"], saved.values["size"], saved.values["color"]) == (
-        "DEMO-1001", 1, "M", "Vert mousse",
+    assert isinstance(saved.values["messages"][-1], AIMessage)
+    assert saved.values["messages"][-1].content == "La boutique a reçu votre demande."
+    assert (saved.values["order_id"], saved.values["item_id"], saved.values["size"], saved.values["color"]) == (
+        "DEMO-1001", "ITEM-DEMO-1001-1", "M", "Vert mousse",
     )
     assert stock(database) == 19
     assert len(prompts) == (3 if initial_size is None else 2)
@@ -339,20 +347,20 @@ def test_collecter_exits_when_request_fields_are_complete(database, monkeypatch,
 @pytest.mark.parametrize("correction", ["Le T-shirt.", "Pas le pull, un autre article.", "Le T-shirt en M."])
 def test_chat_article_correction_drops_only_the_previous_variant(database, boutique, correction):
     thread = new_thread()
-    initial = {"thread_id": thread, "line_number": 1, "message": "Je veux un échange en S.", "message_id": str(uuid4())}
+    initial = {"thread_id": thread, "item_id": "ITEM-DEMO-1001-1", "message": "Je veux un échange en S.", "message_id": str(uuid4())}
     assert send_to_sav(boutique, **initial)["status"] == "same_variant"
 
     result = send_to_sav(boutique, thread_id=thread, message=correction)
     if correction == "Pas le pull, un autre article.":
         assert result["status"] == "item_needed"
-        result = send_to_sav(boutique, thread_id=thread, select_line_number=2)
+        result = send_to_sav(boutique, thread_id=thread, select_item_id="ITEM-DEMO-1001-2")
     if correction != "Le T-shirt en M.":
-        assert (result["status"], result["line_number"]) == ("variant_needed", 2)
+        assert (result["status"], result["item_id"]) == ("variant_needed", "ITEM-DEMO-1001-2")
         with psycopg.connect(database) as db:
             assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
         result = send_to_sav(boutique, thread_id=thread, message="En M.")
 
-    assert (result["status"], result["line_number"], result["size"]) == ("intent_confirmation_needed", 2, "M")
+    assert (result["status"], result["item_id"], result["size"]) == ("intent_confirmation_needed", "ITEM-DEMO-1001-2", "M")
     result = confirm_intent(boutique, thread)
     assert stock(database, "S") == 20
     assert send_to_sav(boutique, **initial) == result
@@ -362,15 +370,14 @@ def confirm_intent(boutique, thread):
     return send_to_sav(boutique, thread_id=thread, message="Oui", message_id=str(uuid4()))
 
 
-def test_multiple_candidates_and_intent_correction(database, boutique):
+def test_ambiguous_variant_and_intent_correction(database, boutique):
     thread = new_thread()
-    result = send_to_sav(boutique, thread_id=thread, line_number=1, message="Je veux un échange en M ou L.")
+    result = send_to_sav(boutique, thread_id=thread, item_id="ITEM-DEMO-1001-1", message="Je veux un échange en M ou L.")
     assert result["status"] == "variant_needed"
     with open_checkpointer(database) as checkpointer:
         graph = build_graph(checkpointer, Shop(database), collect_demo, respond=reply_demo, select=select_demo)
-        state = graph.get_state({"configurable": {"thread_id": thread}}).values
-        assert state["candidates"]["size"] == ["M", "L"]
-        assert state["size"] is None
+        snapshot = graph.get_state({"configurable": {"thread_id": thread}})
+        assert snapshot.interrupts[0].value["size"] is None
 
     result = send_to_sav(boutique, thread_id=thread, message="En M.")
     assert result["request_summary"]["size"] == "M"
@@ -394,13 +401,13 @@ def test_multiple_candidates_and_intent_correction(database, boutique):
     assert stock(database) == 20
 
 
-def pending(boutique, *, action="Je veux un échange en M.", line=1):
+def pending(boutique, *, action="Je veux un échange en M.", item_id="ITEM-DEMO-1001-1"):
     thread = new_thread()
-    preview = send_to_sav(boutique, thread_id=thread, line_number=line, message=action)
+    preview = send_to_sav(boutique, thread_id=thread, item_id=item_id, message=action)
     assert preview["status"] == "intent_confirmation_needed"
     state = confirm_intent(boutique, thread)
     assert state["status"] == "awaiting_shop"
-    assert "transmise" in state["customer_message"]
+    assert "transmise" in state["messages"][-1]["content"]
     return thread
 
 
@@ -418,7 +425,7 @@ def test_exchange_resumes_after_commit_without_duplicate(database):
     opened = json.loads(cli(database, "open", "Je veux un échange en M.", "--demo", "exchange"))
     thread = opened["thread_id"]
     assert opened["interrupt"]["status"] == "item_needed"
-    opened = json.loads(cli(database, "item", thread, "1"))
+    opened = json.loads(cli(database, "item", thread, "ITEM-DEMO-1001-1"))
     assert opened["interrupt"]["status"] == "intent_confirmation_needed"
     opened = json.loads(cli(database, "clarify", thread, "Oui"))
     assert opened["status"] == "awaiting_shop"
@@ -447,6 +454,7 @@ def test_exchange_resumes_after_commit_without_duplicate(database):
 
 
 def test_chat_article_then_variant_shop_and_signed_confirmation(database, boutique):
+    assert "function showResult" in get_page(boutique, "/chat.js")
     opened = send_to_sav(boutique, thread_id=new_thread(), open=True)
     assert "Bonjour Camille !" in opened["greeting"]
     assert "DEMO-1001 est livrée" in opened["greeting"]
@@ -466,9 +474,9 @@ def test_chat_article_then_variant_shop_and_signed_confirmation(database, boutiq
     assert send_to_sav(boutique, thread_id=thread, select_order_id="DEMO-1006") == order_choices
     choices = send_to_sav(boutique, thread_id=thread, message="La première commande.")
     assert choices["status"] == "item_needed"
-    assert [item["line_number"] for item in choices["items"]] == [1, 2, 3]
+    assert [item["item_id"] for item in choices["items"]] == ["ITEM-DEMO-1001-1", "ITEM-DEMO-1001-2", "ITEM-DEMO-1001-3"]
     assert send_to_sav(boutique, **request) == choices
-    assert send_to_sav(boutique, thread_id=thread, select_line_number=999)["status"] == "item_needed"
+    assert send_to_sav(boutique, thread_id=thread, select_item_id="ITEM-DEMO-1001-999")["status"] == "item_needed"
     ambiguous = {"thread_id": thread, "message": "Je ne sais pas", "message_id": str(uuid4())}
     reprompt = send_to_sav(boutique, **ambiguous)
     assert reprompt["status"] == "item_needed"
@@ -527,7 +535,7 @@ def test_chat_article_then_variant_shop_and_signed_confirmation(database, boutiq
     assert "demande est confirmée" in post_form(boutique, legacy_link)
     assert "Récapitulatif" in get_page(boutique, "/support/mailbox/CLI-001")
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT line_number, size, color FROM shop.sav_returns").fetchall() == [(1, "S", "Noir")]
+        assert db.execute("SELECT item_id, size, color FROM shop.sav_returns").fetchall() == [("ITEM-DEMO-1001-1", "S", "Noir")]
         assert db.execute(
             "SELECT quantity FROM shop.sav_color_stock WHERE product_id = 'ART-001' AND size = 'S' AND color = 'Noir'"
         ).fetchone() == (9,)
@@ -561,27 +569,27 @@ def test_refusal_releases_exchange_stock(database, boutique, shop_refusal):
 
 def test_stock_failure_offers_return_without_notifying_shop(database, boutique):
     thread_id = new_thread()
-    send_to_sav(boutique, thread_id=thread_id, line_number=1, message="Je veux un échange en XL.")
+    send_to_sav(boutique, thread_id=thread_id, item_id="ITEM-DEMO-1001-1", message="Je veux un échange en XL.")
     out = confirm_intent(boutique, thread_id)
     assert out["status"] == "out_of_stock"
-    assert "retourner" in out["customer_message"]
+    assert "retourner" in out["question"]
     assert "Aucune demande" in get_page(boutique, "/shop/support")
     with psycopg.connect(database) as db:
         assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
     declined_thread = new_thread()
-    send_to_sav(boutique, thread_id=declined_thread, line_number=1, message="Je veux un échange en XL.")
+    send_to_sav(boutique, thread_id=declined_thread, item_id="ITEM-DEMO-1001-1", message="Je veux un échange en XL.")
     assert confirm_intent(boutique, declined_thread)["status"] == "out_of_stock"
     declined = send_to_sav(boutique, thread_id=declined_thread, message="Non, merci.")
     assert declined["status"] == "request_abandoned"
     assert "Aucune demande" in get_page(boutique, "/shop/support")
     reply = {"thread_id": thread_id, "message": "Oui, je veux bien.", "message_id": str(uuid4())}
     returned = send_to_sav(boutique, **reply)
-    assert (returned["status"], returned["action"], returned["line_number"]) == ("awaiting_shop", "return", 1)
+    assert (returned["status"], returned["action"], returned["item_id"]) == ("awaiting_shop", "return", "ITEM-DEMO-1001-1")
     assert send_to_sav(boutique, **reply) == returned
     post_form(boutique, shop_route(boutique), decision="yes")
     post_form(boutique, mail_link(boutique, "confirm"))
     with psycopg.connect(database) as db:
-        assert db.execute("SELECT line_number, action, size FROM shop.sav_returns").fetchall() == [(1, "return", None)]
+        assert db.execute("SELECT item_id, action, size FROM shop.sav_returns").fetchall() == [("ITEM-DEMO-1001-1", "return", None)]
 
 
 def test_two_requests_cannot_reserve_the_last_unit(database, boutique, monkeypatch):
@@ -597,7 +605,7 @@ def test_two_requests_cannot_reserve_the_last_unit(database, boutique, monkeypat
     monkeypatch.setattr(Shop, "reserve_exchange", check_together)
 
     def submit(thread):
-        send_to_sav(boutique, thread_id=thread, line_number=1, message="Je veux un échange en M.")
+        send_to_sav(boutique, thread_id=thread, item_id="ITEM-DEMO-1001-1", message="Je veux un échange en M.")
         return confirm_intent(boutique, thread)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -644,7 +652,9 @@ def test_information_is_forwarded_once_and_boutique_reply_reaches_mailbox(databa
     reply = {"thread_id": thread, "message": inquiry, "message_id": str(uuid4())}
     sent = send_to_sav(boutique, **reply)
     assert sent["status"] == "information"
-    assert sent["customer_message"] == "Votre question a été transmise ! Vous recevrez une réponse par mail"
+    assert sent["messages"] == [{
+        "role": "assistant", "content": "Votre question a été transmise ! Vous recevrez une réponse par mail",
+    }]
     assert not sent.get("awaiting_message")
     assert send_to_sav(boutique, **reply) == sent
     with psycopg.connect(database) as db:
@@ -677,13 +687,17 @@ def test_global_chat_checks_order_ownership(database, boutique):
     assert all(order["id"] != "DEMO-1011" for order in wrong_account["orders"])
     own_order = ask("Je veux retourner un article de la commande DEMO-1001.")
     assert (own_order["status"], own_order["order_id"]) == ("item_needed", "DEMO-1001")
+    exact_item = ask("Je veux retourner ITEM-DEMO-1001-1.")
+    assert (exact_item["status"], exact_item["order_id"], exact_item["item_id"]) == (
+        "intent_confirmation_needed", "DEMO-1001", "ITEM-DEMO-1001-1",
+    )
     with psycopg.connect(database) as db:
         assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
 
 
 def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
     cli(database, "init")
-    opened = json.loads(cli(database, "open", "Je veux un échange en M.", "--line-number", "1", "--demo", "exchange"))
+    opened = json.loads(cli(database, "open", "Je veux un échange en M.", "--item-id", "ITEM-DEMO-1001-1", "--demo", "exchange"))
     thread = opened["thread_id"]
     cli(database, "clarify", thread, "Oui")
     decision = json.loads(cli(database, "decide", thread, "yes"))
@@ -698,16 +712,16 @@ def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
         ).fetchall()
         legacy_items = db.execute("""
             SELECT order_id, product_id, size, price_cents
-            FROM shop.sav_order_items WHERE line_number = 1 AND order_id IN (
+            FROM shop.sav_order_items WHERE item_id = 'ITEM-' || order_id || '-1' AND order_id IN (
                 SELECT id FROM shop.sav_orders WHERE status <> 'confirmed'
             ) ORDER BY order_id
         """).fetchall()
-        db.execute("ALTER TABLE shop.sav_returns DROP COLUMN line_number")
+        db.execute("ALTER TABLE shop.sav_returns DROP COLUMN item_id")
         db.execute("""
             ALTER TABLE shop.sav_orders ADD COLUMN product_id text REFERENCES shop.sav_products,
                 ADD COLUMN size text;
             UPDATE shop.sav_orders o SET product_id = i.product_id, size = i.size
-                FROM shop.sav_order_items i WHERE i.order_id = o.id AND i.line_number = 1;
+                FROM shop.sav_order_items i WHERE i.order_id = o.id AND i.item_id = 'ITEM-' || o.id || '-1';
             ALTER TABLE shop.sav_orders ALTER COLUMN product_id SET NOT NULL;
             DROP TABLE shop.sav_order_items;
         """)
@@ -743,10 +757,10 @@ def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
             | {("langgraph", table) for table in CHECKPOINT_TABLES}
             | {("public", "unrelated")}
         )
-        assert db.execute("SELECT id, line_number, action FROM shop.sav_returns").fetchall() == [(return_id, 1, "exchange")]
+        assert db.execute("SELECT id, item_id, action FROM shop.sav_returns").fetchall() == [(return_id, "ITEM-DEMO-1001-1", "exchange")]
         assert db.execute("""
             SELECT order_id, product_id, size, price_cents
-            FROM shop.sav_order_items WHERE line_number = 1 AND order_id IN (
+            FROM shop.sav_order_items WHERE item_id = 'ITEM-' || order_id || '-1' AND order_id IN (
                 SELECT id FROM shop.sav_orders WHERE status <> 'confirmed'
             ) ORDER BY order_id
         """).fetchall() == legacy_items
@@ -757,3 +771,41 @@ def test_migrates_legacy_tables_and_preserves_completed_exchange(database):
         assert db.execute(
             "SELECT quantity FROM shop.sav_stock WHERE product_id = 'ART-001' AND size = 'M'"
         ).fetchone() == (19,)
+
+
+def test_migrates_line_based_articles_and_saved_requests(database):
+    initialize_database(database)
+    case_id = str(uuid4())
+    shop = Shop(database)
+    item_id = "ITEM-DEMO-1001-2"
+    shop.register_request({
+        "case_id": case_id, "customer_id": "CLI-001", "order_id": "DEMO-1001", "item_id": item_id,
+        "action": "return", "size": None, "color": None,
+    }, new_thread())
+    shop.finish_step(case_id, "awaiting_customer")
+    return_id, _ = shop.finish_step(case_id, "completed")
+
+    with psycopg.connect(database) as db:
+        for table in ("sav_returns", "sav_requests", "sav_order_items"):
+            db.execute(sql.SQL("""
+                ALTER TABLE shop.{table} ADD COLUMN line_number integer;
+                UPDATE shop.{table} SET line_number = split_part(item_id, '-', 4)::integer;
+                ALTER TABLE shop.{table} ALTER COLUMN line_number SET NOT NULL;
+                ALTER TABLE shop.{table} DROP COLUMN item_id;
+            """).format(table=sql.Identifier(table)))
+        db.execute("""
+            ALTER TABLE shop.sav_order_items ADD PRIMARY KEY (order_id, line_number);
+            ALTER TABLE shop.sav_requests ADD FOREIGN KEY (order_id, line_number)
+                REFERENCES shop.sav_order_items (order_id, line_number);
+            ALTER TABLE shop.sav_returns ADD FOREIGN KEY (order_id, line_number)
+                REFERENCES shop.sav_order_items (order_id, line_number);
+        """)
+
+    initialize_database(database)
+    initialize_database(database)
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT item_id FROM shop.sav_requests WHERE case_id = %s", (case_id,)).fetchone() == (item_id,)
+        assert db.execute("SELECT item_id FROM shop.sav_returns WHERE id = %s", (return_id,)).fetchone() == (item_id,)
+        assert not db.execute("""
+            SELECT 1 FROM information_schema.columns WHERE table_schema = 'shop' AND column_name = 'line_number'
+        """).fetchall()

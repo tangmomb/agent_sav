@@ -23,7 +23,7 @@ class OrderSummary(TypedDict):
 
 
 class OrderArticle(TypedDict):
-    line_number: int
+    item_id: str
     name: str
     color: str
     size: str | None
@@ -39,7 +39,7 @@ class OrderContext(TypedDict):
 ORDER_ITEM = """
     FROM shop.sav_orders o JOIN shop.sav_order_items i ON i.order_id = o.id
     JOIN shop.sav_products p ON p.id = i.product_id
-    WHERE o.customer_id = %s AND o.id = %s AND i.line_number = %s
+    WHERE o.customer_id = %s AND o.id = %s AND i.item_id = %s
 """
 
 
@@ -94,21 +94,46 @@ class Shop:
                 END $$;
                 CREATE TABLE IF NOT EXISTS shop.sav_order_items (
                     order_id text NOT NULL REFERENCES shop.sav_orders,
-                    line_number integer NOT NULL CHECK (line_number > 0),
+                    item_id text PRIMARY KEY,
                     product_id text NOT NULL REFERENCES shop.sav_products,
                     size text,
-                    price_cents integer NOT NULL CHECK (price_cents >= 0),
-                    PRIMARY KEY (order_id, line_number)
+                    price_cents integer NOT NULL CHECK (price_cents >= 0)
                 );
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT FROM pg_attribute WHERE attrelid = 'shop.sav_order_items'::regclass
+                            AND attname = 'line_number' AND NOT attisdropped
+                    ) THEN
+                        ALTER TABLE shop.sav_order_items ADD COLUMN item_id text;
+                        UPDATE shop.sav_order_items SET item_id = 'ITEM-' || order_id || '-' || line_number;
+                        IF to_regclass('shop.sav_returns') IS NOT NULL AND EXISTS (
+                            SELECT FROM pg_attribute WHERE attrelid = to_regclass('shop.sav_returns')
+                                AND attname = 'line_number' AND NOT attisdropped
+                        ) THEN
+                            ALTER TABLE shop.sav_returns ADD COLUMN item_id text;
+                            UPDATE shop.sav_returns SET item_id = 'ITEM-' || order_id || '-' || line_number;
+                            ALTER TABLE shop.sav_returns DROP COLUMN line_number;
+                        END IF;
+                        IF to_regclass('shop.sav_requests') IS NOT NULL THEN
+                            ALTER TABLE shop.sav_requests ADD COLUMN item_id text;
+                            UPDATE shop.sav_requests SET item_id = 'ITEM-' || order_id || '-' || line_number;
+                            ALTER TABLE shop.sav_requests DROP COLUMN line_number;
+                        END IF;
+                        ALTER TABLE shop.sav_order_items DROP COLUMN line_number;
+                        ALTER TABLE shop.sav_order_items ADD PRIMARY KEY (item_id);
+                    END IF;
+                END $$;
                 DO $$
                 BEGIN
                     IF EXISTS (
                         SELECT FROM pg_attribute
                         WHERE attrelid = 'shop.sav_orders'::regclass AND attname = 'product_id' AND NOT attisdropped
                     ) THEN
-                        INSERT INTO shop.sav_order_items (order_id, line_number, product_id, size, price_cents)
-                        SELECT o.id, 1, o.product_id, o.size, p.price_cents
-                        FROM shop.sav_orders o JOIN shop.sav_products p ON p.id = o.product_id;
+                        INSERT INTO shop.sav_order_items (order_id, item_id, product_id, size, price_cents)
+                        SELECT o.id, 'ITEM-' || o.id || '-1', o.product_id, o.size, p.price_cents
+                        FROM shop.sav_orders o JOIN shop.sav_products p ON p.id = o.product_id
+                        ON CONFLICT (item_id) DO NOTHING;
                         ALTER TABLE shop.sav_orders DROP COLUMN product_id, DROP COLUMN size;
                     END IF;
                 END $$;
@@ -139,17 +164,9 @@ class Shop:
             """)
             seed_demo(conn)
             conn.execute("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT FROM pg_attribute WHERE attrelid = 'shop.sav_returns'::regclass
-                        AND attname = 'line_number' AND NOT attisdropped
-                    ) THEN
-                        ALTER TABLE shop.sav_returns ADD COLUMN line_number integer NOT NULL DEFAULT 1;
-                        ALTER TABLE shop.sav_returns ADD FOREIGN KEY (order_id, line_number)
-                            REFERENCES shop.sav_order_items (order_id, line_number);
-                    END IF;
-                END $$;
+                ALTER TABLE shop.sav_returns ADD COLUMN IF NOT EXISTS item_id text;
+                UPDATE shop.sav_returns SET item_id = 'ITEM-' || order_id || '-1' WHERE item_id IS NULL;
+                ALTER TABLE shop.sav_returns ALTER COLUMN item_id SET NOT NULL;
                 ALTER TABLE shop.sav_returns ADD COLUMN IF NOT EXISTS color text;
                 CREATE TABLE IF NOT EXISTS shop.sav_color_stock (
                     product_id text NOT NULL REFERENCES shop.sav_products,
@@ -167,14 +184,29 @@ class Shop:
                     thread_id text NOT NULL UNIQUE,
                     customer_id text NOT NULL REFERENCES shop.sav_customers,
                     order_id text NOT NULL,
-                    line_number integer NOT NULL,
+                    item_id text NOT NULL,
                     action text NOT NULL,
                     size text,
                     color text,
                     status text NOT NULL DEFAULT 'awaiting_shop',
-                    secret text NOT NULL,
-                    FOREIGN KEY (order_id, line_number) REFERENCES shop.sav_order_items (order_id, line_number)
+                    secret text NOT NULL
                 );
+                ALTER TABLE shop.sav_requests ALTER COLUMN item_id SET NOT NULL;
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT FROM pg_constraint WHERE conrelid = 'shop.sav_returns'::regclass
+                            AND conname = 'sav_returns_item_id_fkey'
+                    ) THEN
+                        ALTER TABLE shop.sav_returns ADD FOREIGN KEY (item_id) REFERENCES shop.sav_order_items;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT FROM pg_constraint WHERE conrelid = 'shop.sav_requests'::regclass
+                            AND conname = 'sav_requests_item_id_fkey'
+                    ) THEN
+                        ALTER TABLE shop.sav_requests ADD FOREIGN KEY (item_id) REFERENCES shop.sav_order_items;
+                    END IF;
+                END $$;
                 CREATE TABLE IF NOT EXISTS shop.sav_messages (
                     case_id uuid NOT NULL REFERENCES shop.sav_requests,
                     kind text NOT NULL,
@@ -224,10 +256,10 @@ class Shop:
                 SELECT o.id, o.customer_id, o.ordered_on::text, o.status,
                        sum(i.price_cents) AS total_cents,
                        jsonb_agg(jsonb_build_object(
-                           'line_number', i.line_number, 'product_id', i.product_id,
+                           'item_id', i.item_id, 'product_id', i.product_id,
                            'size', i.size, 'price_cents', i.price_cents,
                            'name', p.name, 'color', p.color, 'sized', p.sized
-                       ) ORDER BY i.line_number) AS items
+                       ) ORDER BY i.item_id) AS items
                 FROM shop.sav_orders o
                 JOIN shop.sav_order_items i ON i.order_id = o.id
                 JOIN shop.sav_products p ON p.id = i.product_id
@@ -256,7 +288,7 @@ class Shop:
             "first_name": row[0].split()[0],
             "order": {"id": order["id"], "status": order["status"]},
             "items": [
-                {"line_number": item["line_number"], "name": item["name"], "color": item["color"], "size": item["size"]}
+                {"item_id": item["item_id"], "name": item["name"], "color": item["color"], "size": item["size"]}
                 for item in order["items"]
             ],
         }
@@ -266,11 +298,11 @@ class Shop:
         )
         return context, active_order_count
 
-    def order_item(self, customer_id: str, order_id: str, line_number: int) -> dict | None:
+    def order_item(self, customer_id: str, order_id: str, item_id: str) -> dict | None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute(
                 "SELECT o.status, i.size, p.sized, p.color, p.id AS product_id " + ORDER_ITEM,
-                (customer_id, order_id, line_number),
+                (customer_id, order_id, item_id),
             ).fetchone()
 
     def variants(self, product_id: str) -> list[str]:
@@ -288,16 +320,16 @@ class Shop:
     @staticmethod
     def insert_request(conn, state: dict, thread_id: str, status: str) -> bool:
         return conn.execute("""
-            INSERT INTO shop.sav_requests (case_id, thread_id, customer_id, order_id, line_number, action, size, color, secret, status)
+            INSERT INTO shop.sav_requests (case_id, thread_id, customer_id, order_id, item_id, action, size, color, secret, status)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT (case_id) DO NOTHING
-        """, (state["case_id"], thread_id, state["customer_id"], state["order_id"], state["line_number"],
+        """, (state["case_id"], thread_id, state["customer_id"], state["order_id"], state["item_id"],
               state["action"], state["size"], state["color"], token_hex(32), status)).rowcount == 1
 
     @staticmethod
     def delivered_item(conn, state: dict) -> dict:
         item = conn.execute(
             "SELECT o.status, p.id AS product_id, p.color " + ORDER_ITEM,
-            (state["customer_id"], state["order_id"], state["line_number"]),
+            (state["customer_id"], state["order_id"], state["item_id"]),
         ).fetchone()
         if item is None or item["status"] != "delivered":
             raise ValueError("Article livré introuvable.")
@@ -342,7 +374,7 @@ class Shop:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             request = conn.execute("""
                 SELECT r.*, i.product_id, p.color AS original_color, p.name AS item_name
-                FROM shop.sav_requests r JOIN shop.sav_order_items i USING (order_id, line_number)
+                FROM shop.sav_requests r JOIN shop.sav_order_items i USING (order_id, item_id)
                 JOIN shop.sav_products p ON p.id = i.product_id WHERE r.case_id = %s FOR UPDATE OF r
             """, (case_id,)).fetchone()
             if request is None:
@@ -376,9 +408,9 @@ class Shop:
             if status == "completed":
                 return_id = f"RET-{uuid4().hex[:12].upper()}"
                 conn.execute("""
-                    INSERT INTO shop.sav_returns (case_id, id, order_id, line_number, action, size, color)
+                    INSERT INTO shop.sav_returns (case_id, id, order_id, item_id, action, size, color)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (case_id, return_id, request["order_id"], request["line_number"], request["action"],
+                """, (case_id, return_id, request["order_id"], request["item_id"], request["action"],
                       request["size"], request["color"]))
                 self.record_message(conn, case_id, "summary", "Récapitulatif de votre demande SAV", f"{detail}\nRéférence : {return_id}")
                 return return_id, True
@@ -389,7 +421,7 @@ class Shop:
             return conn.execute("""
                 SELECT r.case_id::text, r.customer_id, r.order_id, r.action, r.size, r.color, p.name
                 FROM shop.sav_requests r JOIN shop.sav_messages m ON m.case_id = r.case_id AND m.kind = 'shop_notification'
-                JOIN shop.sav_order_items i USING (order_id, line_number)
+                JOIN shop.sav_order_items i USING (order_id, item_id)
                 JOIN shop.sav_products p ON p.id = i.product_id
                 WHERE r.status = 'awaiting_shop' AND strpos(r.thread_id, ':') > 0 ORDER BY m.created_at
             """).fetchall()

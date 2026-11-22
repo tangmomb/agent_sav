@@ -38,6 +38,10 @@ PRODUCTS = (
 )
 
 
+def purchased_item_id(order_id: str, position: int) -> str:
+    return f"ITEM-{order_id}-{position}"
+
+
 def seed_demo(conn) -> None:
     customers = [(f"CLI-{index:03}", name) for index, name in enumerate(CUSTOMERS, 1)]
     products = [(f"ART-{index:03}", *product) for index, product in enumerate(PRODUCTS, 1)]
@@ -59,10 +63,10 @@ def seed_demo(conn) -> None:
             orders.append((order_id, customer_id, ordered_on, status))
             pattern = (index + position) % 8
             offsets = (0, 3, 9) if pattern == 0 else (0, 3) if pattern == 4 else (0,)
-            for line_number, offset in enumerate(offsets, 1):
+            for position_in_order, offset in enumerate(offsets, 1):
                 product_id, _, _, price_cents, sized = products[(index + position * 7 + offset) % len(products)]
                 size = SIZES[(index + position + offset) % len(SIZES)] if sized else None
-                items.append((order_id, line_number, product_id, size, price_cents))
+                items.append((order_id, purchased_item_id(order_id, position_in_order), product_id, size, price_cents))
 
     with conn.cursor() as cursor:
         cursor.executemany("INSERT INTO shop.sav_customers VALUES (%s, %s) ON CONFLICT DO NOTHING", customers)
@@ -73,7 +77,7 @@ def seed_demo(conn) -> None:
             orders,
         )
         cursor.executemany(
-            """INSERT INTO shop.sav_order_items (order_id, line_number, product_id, size, price_cents)
+            """INSERT INTO shop.sav_order_items (order_id, item_id, product_id, size, price_cents)
                VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             items,
         )

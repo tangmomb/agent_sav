@@ -8,6 +8,7 @@ from urllib.parse import parse_qs
 from uuid import UUID
 
 import psycopg
+from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from .database import initialize_database, open_checkpointer
@@ -20,7 +21,7 @@ from .workflow import MESSAGE_NODES, build_graph
 
 PACKAGE = Path(__file__).resolve().parent
 INTERFACE = PACKAGE.parent / "interface"
-ASSETS = PACKAGE / "shop_notification"
+ASSETS = PACKAGE / "boutique"
 ROUTES = {
     "/": (INTERFACE / "index.html", "text/html; charset=utf-8"),
     "/orders": (INTERFACE / "index.html", "text/html; charset=utf-8"),
@@ -254,18 +255,18 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                     raise ValueError
                 thread_id = payload["thread_id"]
                 customer_id, order_id = customer_thread(thread_id)
-                line_number = payload.get("line_number")
-                if "line_number" in payload and (
-                    order_id is None or type(line_number) is not int or not 0 < line_number <= 2**31 - 1
+                item_id = payload.get("item_id")
+                if "item_id" in payload and (
+                    order_id is None or not isinstance(item_id, str) or not 0 < len(item_id) <= 128
                 ):
                     raise ValueError
-                if sum(key in payload for key in ("open", "message", "select_order_id", "select_line_number")) != 1 or "approved" in payload:
+                if sum(key in payload for key in ("open", "message", "select_order_id", "select_item_id")) != 1 or "approved" in payload:
                     raise ValueError
                 opening = payload.get("open") is True
                 message = payload.get("message")
                 message_id = None
                 selected_order_id = payload.get("select_order_id")
-                selected_line = payload.get("select_line_number")
+                selected_item = payload.get("select_item_id")
                 if "message" in payload:
                     if not isinstance(message, str) or not 0 < len(message.strip()) <= 1000:
                         raise ValueError
@@ -273,8 +274,8 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                         if not isinstance(payload["message_id"], str):
                             raise ValueError
                         message_id = str(UUID(payload["message_id"]))
-                elif "select_line_number" in payload:
-                    if type(selected_line) is not int or not 0 < selected_line <= 2**31 - 1:
+                elif "select_item_id" in payload:
+                    if not isinstance(selected_item, str) or not 0 < len(selected_item) <= 128:
                         raise ValueError
                 elif "select_order_id" in payload:
                     if order_id is not None or not isinstance(selected_order_id, str) or not ORDER_REFERENCE.fullmatch(selected_order_id):
@@ -288,10 +289,10 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
 
             try:
                 if opening:
-                    state = self.open_chat(customer_id, order_id, line_number)
+                    state = self.open_chat(customer_id, order_id, item_id)
                 else:
                     state = self.run_case(
-                        thread_id, customer_id, order_id, line_number, message, message_id, selected_order_id, selected_line,
+                        thread_id, customer_id, order_id, item_id, message, message_id, selected_order_id, selected_item,
                     )
             except Exception as error:
                 self.log_error("Échec du dossier SAV (%s)", type(error).__name__)
@@ -304,12 +305,12 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 return
             self.send_json(HTTPStatus.OK, state)
 
-        def open_chat(self, customer_id: str, order_id: str, line_number: int | None) -> dict:
+        def open_chat(self, customer_id: str, order_id: str, item_id: str | None) -> dict:
             prepared = shop.order_context(customer_id, order_id)
             if prepared is None:
                 return {}
             context, count = prepared
-            if line_number is not None and not any(item["line_number"] == line_number for item in context["items"]):
+            if item_id is not None and not any(item["item_id"] == item_id for item in context["items"]):
                 return {}
             order = context["order"]
             return {"greeting": respond({
@@ -340,15 +341,15 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 return status
 
         def run_case(
-            self, thread_id: str, customer_id: str, order_id: str | None, line_number: int | None,
-            message: str | None, message_id: str | None, selected_order_id: str | None, selected_line: int | None,
+            self, thread_id: str, customer_id: str, order_id: str | None, item_id: str | None,
+            message: str | None, message_id: str | None, selected_order_id: str | None, selected_item: str | None,
         ) -> dict:
             config = {
                 "configurable": {"thread_id": thread_id},
                 "run_name": "SAV boutique",
                 "tags": ["shop"],
                 "metadata": {
-                    "customer_id": customer_id, "order_id": order_id, "line_number": line_number,
+                    "customer_id": customer_id, "order_id": order_id, "item_id": item_id,
                 },
             }
             with (
@@ -368,23 +369,21 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                     if prepared is None:
                         return {}
                     context, _ = prepared
-                    if line_number is not None and not any(item["line_number"] == line_number for item in context["items"]):
+                    if item_id is not None and not any(item["item_id"] == item_id for item in context["items"]):
                         return {}
                     status = context["order"]["status"]
                     if status != "delivered":
                         event = "order_in_transit" if status == "in_transit" else "order_confirmed"
-                        return {"status": event, "customer_message": respond({
+                        answer = respond({
                             "status": event, "order": {"id": order_id, "status": status},
-                        }, message)}
-                    if line_number is not None:
-                        data = Command(update={**data, "line_number": line_number})
+                        }, message)
+                        return {"status": event, "messages": [{"role": "assistant", "content": answer}]}
+                    if item_id is not None:
+                        data = Command(update={**data, "item_id": item_id})
                     graph.invoke(data, config, context=context, durability="sync")
                     return None
 
                 snapshot = graph.get_state(config)
-                initial_line = snapshot.values.get("initial_line_number", snapshot.values.get("line_number"))
-                if line_number is not None and initial_line is not None and initial_line != line_number:
-                    return {}
                 if snapshot.next and not snapshot.interrupts:
                     graph.invoke(None, config, durability="sync")
                     snapshot = graph.get_state(config)
@@ -396,8 +395,10 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                     already_received |= message_id in pending.get("_message_ids", [])
                 if selected_order_id is not None and pending.get("status") == "order_needed":
                     graph.invoke(Command(resume={"order_id": selected_order_id}), config, durability="sync")
-                elif selected_line is not None and pending.get("status") == "item_needed":
-                    graph.invoke(Command(resume={"line_number": selected_line}), config, durability="sync")
+                elif selected_item is not None and pending.get("status") == "item_needed" and any(
+                    item["item_id"] == selected_item for item in pending["items"]
+                ):
+                    graph.invoke(Command(resume={"item_id": selected_item}), config, durability="sync")
                 elif message is not None and not already_received and snapshot.next in MESSAGE_NODES and snapshot.interrupts:
                     reply = {"message": message.strip()}
                     if message_id is not None:
@@ -414,11 +415,13 @@ def serve(dsn: str, port: int, *, use_mistral: bool) -> None:
                 snapshot = graph.get_state(config)
                 state = snapshot.values
                 result = {key: state[key] for key in (
-                    "status", "action", "size", "color", "return_id", "customer_message", "line_number", "order_id",
+                    "status", "action", "size", "color", "return_id", "item_id", "order_id",
                 ) if key in state}
                 if snapshot.next in MESSAGE_NODES and snapshot.interrupts:
                     result.update({key: val for key, val in snapshot.interrupts[0].value.items() if key != "_message_ids"})
                     result["awaiting_message"] = True
+                elif (messages := state.get("messages")) and isinstance(messages[-1], AIMessage):
+                    result["messages"] = [{"role": "assistant", "content": str(messages[-1].text)}]
                 return result
 
     with ThreadingHTTPServer(("127.0.0.1", port), BoutiqueHandler) as server:

@@ -17,7 +17,7 @@ from .model import (
 )
 from .shop import DEFAULT_DSN, Shop
 from .thread_id import customer_thread, order_thread
-from .workflow import MESSAGE_NODES, LostResponse, build_graph, client_message
+from .workflow import MESSAGE_NODES, LostResponse, build_graph, trace_state
 
 
 def parse_thread(value: str) -> str:
@@ -44,12 +44,12 @@ def main() -> int:
     start.add_argument("message")
     start.add_argument("--customer", default=DEMO_CUSTOMER)
     start.add_argument("--order", default=DEMO_ORDER)
-    start.add_argument("--line-number", type=int, help="Numéro de l’article dans la commande")
+    start.add_argument("--item-id", help="Identifiant de l’article acheté")
     start.add_argument("--demo", choices=["return", "exchange"], help="Utilise une intention simulée")
 
     article = commands.add_parser("item", help="Choisit un article dans la commande")
     article.add_argument("thread_id", type=parse_thread)
-    article.add_argument("line_number", type=int)
+    article.add_argument("item_id")
 
     clarify = commands.add_parser("clarify", help="Répond en texte libre à la question du SAV")
     clarify.add_argument("thread_id", type=parse_thread)
@@ -122,13 +122,11 @@ def main() -> int:
                 thread_id = f"{args.customer}:{args.order}:{uuid4()}"
                 order_thread(thread_id)
                 config = {"configurable": {"thread_id": thread_id}}
-                if args.line_number is not None and not 0 < args.line_number <= 2**31 - 1:
-                    raise ValueError("Le numéro de ligne est invalide.")
                 prepared = shop.order_context(args.customer, args.order)
                 if prepared is None:
                     raise ValueError("Commande introuvable pour ce client.")
                 context, _ = prepared
-                if args.line_number is not None and not any(item["line_number"] == args.line_number for item in context["items"]):
+                if args.item_id is not None and not any(item["item_id"] == args.item_id for item in context["items"]):
                     raise ValueError("Cet article ne fait pas partie de la commande.")
                 status = context["order"]["status"]
                 if status != "delivered":
@@ -136,11 +134,11 @@ def main() -> int:
                     print(json.dumps({"thread_id": thread_id, "status": result}, ensure_ascii=False, indent=2))
                     return 0
                 data = {"messages": [{"type": "human", "content": args.message}]}
-                if args.line_number is not None:
-                    data["line_number"] = args.line_number
+                if args.item_id is not None:
+                    data["item_id"] = args.item_id
                 if offline:
                     data["demo_mode"] = True
-                entry = Command(update=data) if args.line_number is not None or offline else data
+                entry = Command(update=data) if args.item_id is not None or offline else data
                 graph.invoke(
                     entry,
                     config,
@@ -167,9 +165,9 @@ def main() -> int:
                             or snapshot.interrupts[0].value.get("status") != "item_needed"
                         ):
                             raise ValueError("Ce dossier n’attend pas de choix d’article.")
-                        if not any(item["line_number"] == args.line_number for item in snapshot.interrupts[0].value["items"]):
+                        if not any(item["item_id"] == args.item_id for item in snapshot.interrupts[0].value["items"]):
                             raise ValueError("Cet article ne fait pas partie de la commande.")
-                        graph.invoke(Command(resume={"line_number": args.line_number}), config, durability="sync")
+                        graph.invoke(Command(resume={"item_id": args.item_id}), config, durability="sync")
                     elif args.command == "clarify":
                         if snapshot.next not in MESSAGE_NODES or not snapshot.interrupts:
                             raise ValueError("Ce dossier n’attend pas de précision.")
@@ -192,12 +190,8 @@ def main() -> int:
 
                     snapshot = graph.get_state(config)
 
-            output = {"thread_id": thread_id, **snapshot.values}
-            if output.get("messages"):
-                output["message"] = client_message(snapshot.values)
-            output.pop("messages", None)
+            output = {"thread_id": thread_id, **trace_state(snapshot.values)}
             output.pop("demo_mode", None)
-            output.pop("initial_line_number", None)
             if snapshot.interrupts:
                 output["interrupt"] = {key: val for key, val in snapshot.interrupts[0].value.items() if key != "_message_ids"}
             if output.get("status") == "awaiting_customer":

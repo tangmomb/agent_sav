@@ -27,7 +27,7 @@ Le sommaire de `lancer_demo.bat` donne accès à la boîte mail et au back-offic
 
 La boîte mail locale simule les e-mails du projet. Les données, les interfaces de démo et les liens sont servis sur la machine locale. Un refus libère le stock réservé pour l’échange. La confirmation crée le retour définitif et le mail récapitulatif dans la même transaction.
 
-Pour interpréter les messages avec Z.ai GLM 5.3 Flash, hébergé par Mistral, renseigne `MISTRAL_API_KEY` dans `.env` et lance `web` sans `--demo`.
+Pour interpréter les messages avec Z.ai GLM 5.3 Flash (`zai-glm-5-3-flash`), renseigne `MISTRAL_API_KEY` dans `.env` et lance `web` sans `--demo`.
 
 ## Tester le graphe dans LangSmith Studio
 
@@ -45,14 +45,14 @@ Renseigne le contexte d’exécution.
   "first_name": "Camille",
   "order": {"id": "DEMO-1001", "status": "delivered"},
   "items": [
-    {"line_number": 1, "name": "Pull en laine côtelée", "color": "Vert mousse", "size": "S"},
-    {"line_number": 2, "name": "T-shirt en coton épais", "color": "Écru", "size": "XL"},
-    {"line_number": 3, "name": "Jupe en denim", "color": "Bleu brut", "size": "M"}
+    {"item_id": "ITEM-DEMO-1001-1", "name": "Pull en laine côtelée", "color": "Vert mousse", "size": "S"},
+    {"item_id": "ITEM-DEMO-1001-2", "name": "T-shirt en coton épais", "color": "Écru", "size": "XL"},
+    {"item_id": "ITEM-DEMO-1001-3", "name": "Jupe en denim", "color": "Bleu brut", "size": "M"}
   ]
 }
 ```
 
-Reprends avec `{"message": "Le pull vert"}` pour identifier l’article, puis `{"message": "Du M"}` pour préciser la variante. Dans `validate_intent`, réponds `{"message": "Oui"}` pour lancer la demande. Les deux décisions suivantes se reprennent dans Studio avec `{"approved": true}` puis `true`. Pour les refus, utilise `{"approved": false, "reason": "Motif du refus"}` côté boutique et `false` côté client. Studio conserve ses propres checkpoints et écrit les demandes et les mails dans la base de démonstration.
+Reprends avec `{"message": "Le pull vert"}` pour identifier l’article, puis `{"message": "Du M"}` pour préciser la variante. Garde le même contexte lors des reprises si tu veux limiter la collecte à cette commande. Dans `validate_intent`, réponds `{"message": "Oui"}` pour lancer la demande. Les deux décisions suivantes se reprennent dans Studio avec `{"approved": true}` puis `true`. Pour les refus, utilise `{"approved": false, "reason": "Motif du refus"}` côté boutique et `false` côté client. Studio conserve ses propres checkpoints et écrit les demandes et les mails dans la base de démonstration.
 
 Pour suivre les exécutions, renseigne `LANGSMITH_API_KEY`, `LANGSMITH_TRACING=true` et `LANGSMITH_PROJECT=agent-sav` dans `.env`. Le chat et les décisions de l’interface boutique utilisent le tag `shop` et reprennent le même `thread_id`.
 
@@ -60,7 +60,7 @@ Pour suivre les exécutions, renseigne `LANGSMITH_API_KEY`, `LANGSMITH_TRACING=t
 
 ```powershell
 .\.venv\Scripts\python.exe -m agent_sav init
-.\.venv\Scripts\python.exe -m agent_sav open "Je souhaite retourner un article." --line-number 1 --demo return
+.\.venv\Scripts\python.exe -m agent_sav open "Je souhaite retourner un article." --item-id ITEM-DEMO-1001-1 --demo return
 $threadId = 'COLLER-LE-THREAD-ID'
 .\.venv\Scripts\python.exe -m agent_sav clarify $threadId Oui
 .\.venv\Scripts\python.exe -m agent_sav decide $threadId yes
@@ -69,7 +69,7 @@ $link = 'COLLER-LE-LIEN-confirm-DE-email_links'
 .\.venv\Scripts\python.exe -m agent_sav resume $threadId
 ```
 
-`reply` s’arrête volontairement après le commit qui crée le retour et son récapitulatif. `resume` renvoie la même référence sans produire un deuxième retour. `decide $threadId no --reason "..."` simule un refus de la boutique. Pour sélectionner l’article après l’ouverture, omets `--line-number` et utilise `item $threadId 1`.
+`reply` s’arrête volontairement après le commit qui crée le retour et son récapitulatif. `resume` renvoie la même référence sans produire un deuxième retour. `decide $threadId no --reason "..."` simule un refus de la boutique. Pour sélectionner l’article après l’ouverture, omets `--item-id` et utilise `item $threadId ITEM-DEMO-1001-1`.
 
 ## Installation et tests
 

@@ -1343,10 +1343,6 @@
           "type": "arrow"
         },
         {
-          "id": "continue-collection",
-          "type": "arrow"
-        },
-        {
           "id": "intent-correction",
           "type": "arrow"
         },
@@ -2815,120 +2811,6 @@
       "autoResize": true,
       "lineHeight": 1.25,
       "labelPosition": null
-    },
-    {
-      "id": "continue-collection",
-      "type": "arrow",
-      "x": 3374,
-      "y": -1508,
-      "width": 84,
-      "height": 70,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "b6CA",
-      "roundness": null,
-      "seed": 1392509650,
-      "version": 1,
-      "versionNonce": 1889311506,
-      "isDeleted": false,
-      "boundElements": [
-        {
-          "id": "continue-collection-label",
-          "type": "text"
-        }
-      ],
-      "updated": 1795207178742,
-      "created": 1795206988468,
-      "link": null,
-      "locked": false,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          -84,
-          0
-        ],
-        [
-          -84,
-          70
-        ],
-        [
-          0,
-          70
-        ]
-      ],
-      "startBinding": {
-        "elementId": "RDau2-4GwTV6k5e0gxXhN",
-        "mode": "orbit",
-        "fixedPoint": [
-          -0.01764705882352941,
-          0.2
-        ]
-      },
-      "endBinding": {
-        "elementId": "RDau2-4GwTV6k5e0gxXhN",
-        "mode": "orbit",
-        "fixedPoint": [
-          -0.01764705882352941,
-          0.8363636363636363
-        ]
-      },
-      "startArrowhead": null,
-      "endArrowhead": "arrow",
-      "elbowed": false,
-      "fixedSegments": null,
-      "startIsSpecial": null,
-      "endIsSpecial": null
-    },
-    {
-      "id": "continue-collection-label",
-      "type": "text",
-      "x": 3260,
-      "y": -1468,
-      "width": 80,
-      "height": 25,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
-      "frameId": null,
-      "index": "b6CB",
-      "roundness": null,
-      "seed": 297741906,
-      "version": 1,
-      "versionNonce": 1278961874,
-      "isDeleted": false,
-      "boundElements": [],
-      "updated": 1795207178742,
-      "created": 1795206988468,
-      "link": null,
-      "locked": false,
-      "text": "continue_collection",
-      "fontSize": 20,
-      "baseFontSize": null,
-      "fontFamily": 5,
-      "textAlign": "center",
-      "verticalAlign": "middle",
-      "containerId": "continue-collection",
-      "originalText": "continue_collection",
-      "autoResize": true,
-      "lineHeight": 1.25,
-      "labelPosition": 0.5
     },
     {
       "id": "confirmed-exchange-stock",

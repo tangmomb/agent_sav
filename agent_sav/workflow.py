@@ -1,5 +1,6 @@
 import re
 from collections.abc import Callable
+from inspect import getdoc
 from typing import Annotated, NotRequired, TypedDict, cast
 from uuid import uuid4
 
@@ -41,27 +42,21 @@ class InputState(TypedDict, total=False):
 
 class CollectionInput(InputState, total=False):
     case_id: str
-    line_number: int | None
-    initial_line_number: int
+    item_id: str | None
 
 
 class CollectionUpdate(CollectionInput, total=False):
     customer_id: str
     order_id: str | None
-    order_reference: str | None
-    status: str | None
     action: str
     size: str | None
     color: str | None
     items: list[OrderArticle]
     first_name: str
-    customer_message: str | None
-    candidates: dict[str, list]
-    collection_prompt: dict | None
-    scoped_order_id: str | None
 
 
 class State(CollectionUpdate, total=False):
+    status: str
     reason: str
     approved: bool
     return_id: str
@@ -96,11 +91,11 @@ def read_message(reply) -> HumanMessage | None:
     return None
 
 
-def with_reply_ids(payload: dict, replies: list[HumanMessage]) -> dict:
-    return {**payload, "_message_ids": [reply.id for reply in replies if reply.id]}
+def with_reply_ids(payload: dict, replies: list[AnyMessage]) -> dict:
+    return {**payload, "_message_ids": [reply.id for reply in replies if isinstance(reply, HumanMessage) and reply.id]}
 
 
-def ask_message(payload: dict, replies: list[HumanMessage]) -> HumanMessage:
+def ask_message(payload: dict, replies: list[AnyMessage]) -> HumanMessage:
     payload = with_reply_ids(payload, replies)
     while True:
         message = read_message(interrupt(payload, response_schema=MESSAGE_REPLY_SCHEMA))
@@ -155,11 +150,8 @@ def displayed_question(prompt: dict) -> str:
 def collection_route(state: CollectionUpdate) -> str:
     if state.get("action") == "information":
         return "information"
-    if state.get("collection_prompt"):
-        return "continue_collection"
-
     article = next(
-        (item for item in state.get("items", []) if item["line_number"] == state.get("line_number")), None,
+        (item for item in state.get("items", []) if item["item_id"] == state.get("item_id")), None,
     )
     if article and state.get("case_id") and state.get("customer_id") and state.get("order_id"):
         size, color = state.get("size"), state.get("color")
@@ -174,7 +166,7 @@ def collection_route(state: CollectionUpdate) -> str:
     raise ValueError("La collecte s’est arrêtée avant que la demande soit complète.")
 
 
-def intention_route(state: CollectionUpdate) -> str:
+def intention_route(state: State) -> str:
     if state["status"] == "intent_confirmed":
         return state["action"]
     if state["status"] == "intent_needs_correction":
@@ -213,8 +205,8 @@ def build_graph(
         return prepared[0] if prepared else None
 
     @task
-    def read_variant(customer_id: str, order_id: str, line_number: int) -> tuple[dict, list[str]]:
-        item = shop.order_item(customer_id, order_id, line_number)
+    def read_variant(customer_id: str, order_id: str, item_id: str) -> tuple[dict, list[str]]:
+        item = shop.order_item(customer_id, order_id, item_id)
         if item is None or item["status"] != "delivered":
             raise ValueError("Article livré introuvable.")
         return item, shop.variants(item["product_id"])
@@ -223,7 +215,7 @@ def build_graph(
     def read_selection(message: str, question: str, options: list[str]) -> int | None:
         return select(message, question, options)
 
-    def match_option(message: HumanMessage | None, question: str, options: list[str], replies: list[HumanMessage]) -> int | None:
+    def match_option(message: HumanMessage | None, question: str, options: list[str], replies: list[AnyMessage]) -> int | None:
         if message is None:
             return None
         replies.append(message)
@@ -232,8 +224,9 @@ def build_graph(
             return number - 1
         return None
 
-    def next_collection_prompt(
-        draft: CollectionUpdate, delivered: list[dict], *, retry_article: bool, unavailable_order: bool,
+    def clarification_prompt(
+        draft: CollectionUpdate, delivered: list[dict], *,
+        retry_article: bool, unknown_reference: bool, unavailable_order: bool, ambiguous_variant: bool,
     ) -> dict:
         if draft["action"] == "uncertain":
             return {"status": "intent_needed", "required_detail": "l’intention (renseignement, échange ou retour)"}
@@ -245,8 +238,7 @@ def build_graph(
                 draft.update(first_name=context["first_name"], items=context["items"])
             else:
                 delivered = [order for order in delivered if order["id"] != order_id]
-                draft.update(order_id=None, line_number=None, size=None, color=None)
-                draft["candidates"] = {"line": [], "size": [], "color": []}
+                draft.update(order_id=None, item_id=None, size=None, color=None)
                 order_id = None
                 unavailable_order = True
         if order_id is None:
@@ -259,7 +251,7 @@ def build_graph(
             return {
                 "status": "order_needed",
                 "required_detail": "la commande",
-                "unknown_reference": bool(draft["order_reference"]) and not unavailable_order,
+                "unknown_reference": unknown_reference,
                 "unavailable_order": unavailable_order,
                 "action": draft["action"],
                 "options": [
@@ -270,7 +262,7 @@ def build_graph(
             }
 
         items = draft["items"]
-        if not any(item["line_number"] == draft.get("line_number") for item in items):
+        if not any(item["item_id"] == draft.get("item_id") for item in items):
             return {
                 "status": "item_needed", "ambiguous_reply": retry_article, "order_id": order_id,
                 "required_detail": "l’article de la commande",
@@ -281,16 +273,13 @@ def build_graph(
             draft.update(size=None, color=None)
             return {}
 
-        item, colors = read_variant(draft["customer_id"], order_id, draft["line_number"]).result()
+        item, colors = read_variant(draft["customer_id"], order_id, draft["item_id"]).result()
         size, color = draft["size"], draft["color"]
-        candidates = draft["candidates"]
-        if (item["sized"] and size is None and len(candidates["size"]) > 1) or (
-            color is None and len(candidates["color"]) > 1
-        ):
+        if ambiguous_variant:
             return {
                 "status": "variant_needed", "required_detail": "une seule variante parmi celles mentionnées",
                 "uses_size": item["sized"], "colors": colors, "ordered_size": item["size"],
-                "order_id": order_id, "line_number": draft["line_number"], "action": draft["action"],
+                "order_id": order_id, "item_id": draft["item_id"], "action": draft["action"],
             }
         catalog = {name.casefold(): name for name in [item["color"], *colors]}
         requested_color = catalog.get(color.casefold()) if color else None
@@ -309,207 +298,215 @@ def build_graph(
         return {
             "status": status, "uses_size": item["sized"], "colors": colors, "ordered_size": item["size"],
             "required_detail": "la taille et/ou le coloris souhaité" if item["sized"] else "le coloris souhaité",
-            "order_id": order_id, "line_number": draft["line_number"], "action": draft["action"],
+            "order_id": order_id, "item_id": draft["item_id"], "action": draft["action"],
         }
 
     def collect_order(state: CollectionUpdate, config: RunnableConfig, runtime: Runtime[OrderContext]) -> CollectionUpdate:
+        """Identifie l’intention du client et recueille les détails de sa demande SAV.
+
+        Chaque article acheté est identifié par son `item_id`. Le nœud demande les
+        précisions manquantes via des interruptions et reprend à chaque réponse du client.
+
+        Conditions de sortie
+
+        - Vers `request_support_question` → la demande est un renseignement (`action` vaut `information`).
+        - Vers `validate_intent` → le retour est complet (`action` vaut `return`, `case_id`,
+          `customer_id` et `order_id` sont renseignés, `item_id` correspond à un article de `items`,
+          et `size` et `color` valent `None`).
+        - Vers `validate_intent` → l’échange est complet (`action` vaut `exchange`, les mêmes clés
+          identifient le dossier et l’article, et la variante diffère de celle achetée.
+          Le coloris (`color`) est renseigné, ainsi que la taille (`size`) si l’article en a une).
+
+        Clés que le nœud peut produire
+
+        - `case_id` (state) identifie le dossier SAV.
+        - `customer_id` (state) (fournie par contexte) identifie le client.
+        - `order_id` (state) désigne la commande vérifiée.
+        - `first_name` (state) contient le prénom du client.
+        - `items` (state) contient les articles de la commande.
+        - `item_id` (state) identifie l’article acheté sélectionné.
+        - `action` (state) contient l’intention du client.
+        - `size` (state) contient la taille de remplacement.
+        - `color` (state) contient le coloris de remplacement.
+        - `next_question` contient la question proposée par le modèle pour formuler l’interruption.
+        - `messages` (state) reçoit les questions du SAV et les réponses du client à la sortie du nœud.
+        """
         thread_id = str(config.get("configurable", {}).get("thread_id", ""))
         draft = collection_update({key: value for key, value in state.items() if key != "messages"})
+        thread_customer, scoped_order = customer_thread(thread_id) if ":" in thread_id else (None, None)
+        context = initial_context(runtime.context).result()
         if not draft.get("customer_id"):
-            context = initial_context(runtime.context).result()
-            customer_id, scoped_order = (
-                customer_thread(thread_id) if ":" in thread_id
-                else ((context or {}).get("customer_id", DEMO_CUSTOMER), None)
-            )
-            if context:
-                if context.get("customer_id", customer_id) != customer_id or scoped_order not in {None, context["order"]["id"]}:
-                    raise ValueError("Commande ou article introuvable.")
-                scoped_order = context["order"]["id"]
             draft.update(
-                customer_id=customer_id, scoped_order_id=scoped_order, order_reference=scoped_order,
-                action="uncertain", size=None, color=None, status=None,
-                case_id=operation_id(thread_id) if ":" in thread_id else state.get("case_id") or str(uuid4()),
+                customer_id=thread_customer or (context or {}).get("customer_id", DEMO_CUSTOMER),
+                action="uncertain", size=None, color=None,
+                case_id=state.get("case_id") or (operation_id(thread_id) if thread_id else str(uuid4())),
             )
-            if state.get("line_number") is not None:
-                draft["initial_line_number"] = state.get("initial_line_number", state["line_number"])
+        customer_id = draft["customer_id"]
+        if context and (order_context := context.get("order")):
+            if context.get("customer_id", customer_id) != customer_id or scoped_order not in {None, order_context["id"]}:
+                raise ValueError("Commande ou article introuvable.")
+            scoped_order = order_context["id"]
 
-        customer_id, scoped_order = draft["customer_id"], draft["scoped_order_id"]
-        orders = read_orders(customer_id).result()
-        by_id = {order["id"]: order for order in orders}
-        available = [order for order in orders if scoped_order is None or order["id"] == scoped_order]
-        delivered = [order for order in available if order["status"] == "delivered"]
-        if scoped_order and scoped_order not in by_id:
-            raise ValueError("Commande ou article introuvable.")
-        if scoped_order and draft.get("line_number") is not None and not any(
-            item["line_number"] == draft["line_number"] for item in by_id[scoped_order]["items"]
-        ):
-            raise ValueError("Commande ou article introuvable.")
-
-        candidates = {key: list(draft.get("candidates", {}).get(key, [])) for key in ("line", "size", "color")}
-        draft["candidates"] = candidates
-        prompt = draft.pop("collection_prompt", None) or {}
-        conversation = state.get("messages", [])
+        conversation = list(state.get("messages", []))
         message = next((item for item in reversed(conversation) if isinstance(item, HumanMessage)), None)
-        latest_text = str(message.text) if message is not None else None
+        # A checkpoint from the former collection loop may end at an already asked question.
+        if draft.get("order_id") and conversation and isinstance(conversation[-1], AIMessage):
+            message = None
         replies: list[AnyMessage] = []
-        reply = None
-        if prompt:
-            if "question" not in prompt:
-                prompt = {**prompt, "question": clarification_text(prompt)}
-            reply = interrupt(prompt, response_schema=MESSAGE_REPLY_SCHEMA)
-            message = read_message(reply)
+        prompt = {}
+        selection: dict = {}
+        while True:
+            orders = read_orders(customer_id).result()
+            by_id = {order["id"]: order for order in orders}
+            delivered = [order for order in orders if order["status"] == "delivered" and (
+                scoped_order is None or order["id"] == scoped_order
+            )]
+            if scoped_order and scoped_order not in by_id:
+                raise ValueError("Commande ou article introuvable.")
+            article_orders = {item["item_id"]: order["id"] for order in delivered for item in order["items"]}
+            previous_order = draft.get("order_id")
+            previous_item = draft.get("item_id")
+            if scoped_order and previous_item and article_orders.get(previous_item) != scoped_order:
+                raise ValueError("Commande ou article introuvable.")
+
+            turn = {}
+            asked_order = selection.get("order_id")
+            asked_item = selection.get("item_id")
             if message is not None:
                 latest_text = str(message.text)
-                replies.append(message)
+                turn = read_turn(latest_text, {
+                    "customer_orders": [
+                        {"id": order["id"], "status": order["status"], "ordered_on": order["ordered_on"], "items": [
+                            {key: item[key] for key in ("item_id", "name", "size", "color")} for item in order["items"]
+                        ]}
+                        for order in delivered
+                    ],
+                    "draft": {
+                        "action": draft["action"], "order_id": previous_order or scoped_order,
+                        "item_id": previous_item, "size": draft["size"], "color": draft["color"],
+                    },
+                    "discussion_thread": [
+                        {"role": "user" if isinstance(item, HumanMessage) else "assistant", "content": str(item.text)}
+                        for item in [*conversation, *replies]
+                        if item is not message and isinstance(item, (HumanMessage, AIMessage))
+                    ],
+                }).result()
+                if turn["action"] is not None:
+                    draft["action"] = turn["action"]
+                references = {reference.upper() for reference in ORDER_REFERENCE.findall(latest_text)}
+                asked_order = next(iter(references)) if len(references) == 1 else turn["order_id"]
+                explicit_items = {item_id for item_id in article_orders if re.search(
+                    rf"(?<![\w-]){re.escape(item_id)}(?![\w-])", latest_text, re.IGNORECASE,
+                )}
+                asked_item = next(iter(explicit_items)) if len(explicit_items) == 1 else (
+                    None if explicit_items else turn["item_id"]
+                )
 
-        pending_order = None
-        lines = []
-        turn = {}
-        if message is not None:
-            discussion_thread = [
-                {"role": "user" if isinstance(item, HumanMessage) else "assistant", "content": str(item.text)}
-                for item in conversation if item is not message and isinstance(item, (HumanMessage, AIMessage))
-            ]
-            if prompt:
-                last_assistant = {"role": "assistant", "content": prompt["question"]}
-                if discussion_thread and discussion_thread[-1] == last_assistant:
-                    discussion_thread[-1] = {"role": "assistant", "content": displayed_question(prompt)}
-                elif not discussion_thread or discussion_thread[-1]["role"] != "assistant":
-                    discussion_thread.append({"role": "assistant", "content": displayed_question(prompt)})
-            turn = read_turn(latest_text, {
-                "orders": [
-                    {"id": order["id"], "status": order["status"], "ordered_on": order["ordered_on"], "items": [
-                        {key: item[key] for key in ("line_number", "name", "size", "color")} for item in order["items"]
-                    ]}
-                    for order in delivered
-                ],
-                "draft": {
-                    "action": draft["action"], "order_id": draft.get("order_id") or scoped_order,
-                    "line_number": draft.get("line_number"), "size": draft["size"], "color": draft["color"],
-                },
-                "discussion_thread": discussion_thread,
-            }).result()
-            if turn["action"] is not None:
-                draft["action"] = turn["action"]
-            references = {reference.upper() for reference in ORDER_REFERENCE.findall(latest_text)}
-            pending_order = next(iter(references)) if len(references) == 1 else turn["order_id"]
-            if not scoped_order or pending_order in {None, scoped_order}:
-                lines = turn["line"]
-        elif isinstance(reply, dict):
-            if prompt.get("status") == "order_needed":
-                chosen = reply.get("order_id")
-                if isinstance(chosen, str) and any(order["id"] == chosen for order in prompt["orders"]):
-                    pending_order = chosen
-                    replies.append(HumanMessage(content=chosen))
-            elif prompt.get("status") == "item_needed":
-                line = reply.get("line_number")
-                article = next((item for item in prompt["items"] if item["line_number"] == line), None)
-                if type(line) is int and article:
-                    lines = [line]
-                    replies.append(HumanMessage(content=article_option(article)))
+            if draft["action"] == "information":
+                draft.update(size=None, color=None)
+                return collection_update({**draft, "messages": replies})
 
-        if pending_order:
-            draft["order_reference"] = pending_order
-        draft.update(collection_prompt=None, status=None, customer_message=None)
-        if draft["action"] == "information":
-            draft.update(size=None, color=None)
-            return collection_update({**draft, "messages": replies})
+            reference = scoped_order or asked_order or article_orders.get(asked_item) or previous_order
+            order = next((order for order in delivered if order["id"] == reference), None)
+            unknown_reference = bool(reference not in by_id) if reference else bool(prompt.get("unknown_reference"))
+            unavailable_order = order is None and reference in by_id if reference else bool(prompt.get("unavailable_order"))
+            if reference is None and len(delivered) == 1 and not (unknown_reference or unavailable_order):
+                order = delivered[0]
+            order_id = order["id"] if order else None
+            if order_id != previous_order:
+                draft.update(order_id=order_id, items=[])
+                if previous_order:
+                    draft.update(item_id=None, size=None, color=None)
 
-        reference = scoped_order or draft["order_reference"]
-        order = next((entry for entry in delivered if entry["id"] == reference), None)
-        unavailable_order = reference in by_id and order is None
-        if order is None and reference is None and len(delivered) == 1:
-            order = delivered[0]
+            valid_item = asked_item if asked_item and article_orders.get(asked_item) == order_id and order_id else None
+            if scoped_order and asked_order not in {None, scoped_order}:
+                valid_item = None
+            explicit_correction = previous_item and message is not None and re.search(
+                r"\b(?:autre (?:article|produit)|pas cet article|trompe d['’ ]article|trompe de produit)\b",
+                normalize(str(message.text)),
+            )
+            if explicit_correction and valid_item == previous_item:
+                valid_item = None
+            if explicit_correction or (valid_item and previous_item and valid_item != previous_item):
+                draft.update(item_id=None, size=None, color=None)
+            if valid_item:
+                draft["item_id"] = valid_item
 
-        previous_order = draft.get("order_id")
-        previous_line = draft.get("line_number")
-        order_id = order["id"] if order else None
-        order_changed = previous_order is not None and previous_order != order_id
-        if previous_order != order_id:
-            draft.update(order_id=order_id, items=[])
-        if order_changed:
-            candidates["line"].clear()
-        if order is None and reference is None:
-            candidates["line"] = list(dict.fromkeys([*candidates["line"], *(line for line in lines if line > 0)]))
-        elif order and previous_order is None and not lines:
-            lines = candidates["line"]
+            if turn.get("size") and not turn.get("color") and prompt.get("status") == "unknown_color":
+                draft["color"] = None
+            ambiguous_variant = False
+            for field in ("size", "color"):
+                values = list(dict.fromkeys(turn.get(field, [])))
+                if values:
+                    draft[field] = values[0] if len(values) == 1 else None
+                    ambiguous_variant |= len(values) > 1
 
-        explicit_correction = previous_line is not None and message is not None and bool(re.search(
-            r"\b(?:autre (?:article|produit)|pas cet article|trompe d['’ ]article|trompe de produit)\b",
-            normalize(latest_text),
-        ))
-        if explicit_correction and not order_changed:
-            lines = [line for line in lines if line != previous_line]
-        valid_lines = list(dict.fromkeys(
-            line for line in lines if order and any(item["line_number"] == line for item in order["items"])
-        ))
-        candidates["line"] = list(dict.fromkeys([*candidates["line"], *valid_lines]))
-        article_changed = previous_line is not None and (
-            explicit_correction or (lines and valid_lines != [previous_line])
-        )
-        if order_changed or article_changed:
-            draft.update(line_number=None, size=None, color=None)
-            candidates["size"].clear()
-            candidates["color"].clear()
-        if len(valid_lines) == 1:
-            draft["line_number"] = valid_lines[0]
+            prompt = clarification_prompt(
+                draft, delivered, unknown_reference=unknown_reference, unavailable_order=unavailable_order,
+                retry_article=not valid_item and (bool(explicit_correction) or prompt.get("status") == "item_needed"),
+                ambiguous_variant=ambiguous_variant,
+            )
+            if not prompt:
+                return collection_update({**draft, "messages": replies})
 
-        if turn.get("size") and not turn.get("color") and prompt.get("status") == "unknown_color":
-            draft["color"] = None
-            candidates["color"].clear()
-        for field in ("size", "color"):
-            new_values = list(dict.fromkeys(turn.get(field, [])))
-            if new_values:
-                candidates[field] = list(dict.fromkeys([*candidates[field], *new_values]))
-                draft[field] = new_values[0] if len(new_values) == 1 else None
+            prompt["question"] = clarification_text(prompt, turn.get("next_question"))
+            replies.append(AIMessage(content=displayed_question(prompt)))
+            details = {key: draft[key] for key in ("action", "order_id", "item_id", "size", "color") if key in draft}
+            payload = with_reply_ids({**details, **prompt}, replies)
+            selection = {}
+            message = None
+            while not selection and message is None:
+                reply = interrupt(payload, response_schema=MESSAGE_REPLY_SCHEMA)
+                message = read_message(reply)
+                if message is not None:
+                    replies.append(message)
+                elif isinstance(reply, dict):
+                    if prompt["status"] == "order_needed":
+                        choice = next((order for order in prompt["orders"] if order["id"] == reply.get("order_id")), None)
+                        if choice is not None:
+                            selection = {"order_id": choice["id"]}
+                            replies.append(HumanMessage(content=choice["id"]))
+                    elif prompt["status"] == "item_needed":
+                        choice = next((item for item in prompt["items"] if item["item_id"] == reply.get("item_id")), None)
+                        if choice is not None:
+                            selection = {"item_id": choice["item_id"]}
+                            replies.append(HumanMessage(content=article_option(choice)))
 
-        next_prompt = next_collection_prompt(
-            draft, delivered,
-            unavailable_order=unavailable_order,
-            retry_article=bool(not valid_lines and message is not None and (
-                article_changed or prompt.get("status") == "item_needed"
-            )),
-        )
-        if next_prompt:
-            next_prompt["question"] = clarification_text(next_prompt, turn.get("next_question"))
-            replies.append(AIMessage(content=displayed_question(next_prompt)))
-            draft.update(collection_prompt=next_prompt, status=next_prompt["status"])
-        return collection_update({**draft, "messages": replies})
-
-    def write_sav_message(state: CollectionUpdate) -> CollectionUpdate:
-        question = ask_message({
-            "status": "question_needed",
-            "question": "Que souhaitez vous demander au sav ?",
-        }, [])
-        shop.submit_inquiry(state["case_id"], state["customer_id"], str(question.text))
+    def write_sav_message(state: CollectionUpdate) -> State:
+        question = "Que souhaitez vous demander au sav ?"
+        reply = ask_message({"status": "question_needed", "question": question}, [])
+        shop.submit_inquiry(state["case_id"], state["customer_id"], str(reply.text))
         return {
             "status": "information",
-            "customer_message": "Votre question a été transmise ! Vous recevrez une réponse par mail",
-            "messages": [question],
+            "messages": [
+                AIMessage(content=question), reply,
+                AIMessage(content="Votre question a été transmise ! Vous recevrez une réponse par mail"),
+            ],
         }
 
-    def validate_intention(state: CollectionUpdate) -> CollectionUpdate:
+    def validate_intention(state: CollectionUpdate) -> State:
         if state["action"] == "information":
             # Older checkpoints may still be paused in this node.
             return write_sav_message(state)
-        article = next(item for item in state["items"] if item["line_number"] == state["line_number"])
+        article = next(item for item in state["items"] if item["item_id"] == state["item_id"])
         summary = {
-            "action": state["action"], "item_name": article["name"], "order_id": state["order_id"],
+            "action": state["action"], "item_id": article["item_id"], "item_name": article["name"], "order_id": state["order_id"],
             "size": state["size"], "color": state["color"],
         }
-        replies = []
-        text = write_reply({"status": "intent_confirmation_needed", "request_summary": summary}, client_message(state)).result()
+        replies: list[AnyMessage] = []
+        text = write_reply({"status": "intent_confirmation_needed", "request_summary": summary}).result()
         reply = ask_message({"status": "intent_confirmation_needed", "question": text, "request_summary": summary}, replies)
-        replies.append(reply)
+        replies.extend([AIMessage(content=text), reply])
         answer = " ".join(re.findall(r"[\w'’]+", normalize(str(reply.text))))
         if re.fullmatch(r"oui(?: merci| je confirme)?|je confirme|d['’]accord|ok", answer):
             return {"status": "intent_confirmed", "messages": replies}
         if answer in {"annuler", "je veux annuler", "abandonner"}:
-            return {"status": "request_abandoned", "customer_message": write_reply({"status": "request_abandoned"}).result(),
-                    "messages": replies}
+            text = write_reply({"status": "request_abandoned"}).result()
+            return {"status": "request_abandoned", "messages": [*replies, AIMessage(content=text)]}
         if answer in {"non", "non merci", "a corriger"}:
             text = write_reply({"status": "intent_needs_correction", "required_detail": "la correction à apporter"}).result()
-            replies.append(ask_message({"status": "intent_needs_correction", "question": text}, replies))
+            correction = ask_message({"status": "intent_needs_correction", "question": text}, replies)
+            replies.extend([AIMessage(content=text), correction])
         return {"status": "intent_needs_correction", "messages": replies}
 
     def check_stock(state: State, config: RunnableConfig) -> State:
@@ -524,7 +521,7 @@ def build_graph(
 
     def offer_return(state: State) -> State:
         options = ["Oui, retourner l’article", "Non, abandonner la demande"]
-        replies = []
+        replies: list[AnyMessage] = []
         while True:
             question = write_reply({
                 "status": "out_of_stock", "ambiguous_reply": bool(replies),
@@ -533,14 +530,15 @@ def build_graph(
             }, str(replies[-1].text) if replies else client_message(state)).result()
             reply = ask_message({
                 "status": "out_of_stock",
-                "customer_message": question,
+                "question": question,
             }, replies)
+            replies.append(AIMessage(content=question))
             index = match_option(reply, question, options, replies)
             if index == 0:
                 return {"action": "return", "size": None, "color": None, "messages": replies}
             if index == 1:
                 message = write_reply({"status": "request_abandoned"}, str(reply.text)).result()
-                return {"status": "request_abandoned", "customer_message": message, "messages": replies}
+                return {"status": "request_abandoned", "messages": [*replies, AIMessage(content=message)]}
 
     def register_request(state: State, config: RunnableConfig) -> State:
         shop.register_request(state, config["configurable"]["thread_id"])
@@ -551,11 +549,11 @@ def build_graph(
             "status": "awaiting_shop", "action": state["action"], "request_submitted": True,
         }).result()
         shop.notify_shop(state["case_id"])
-        return {"customer_message": message}
+        return {"messages": [AIMessage(content=message)]}
 
     def wait_for_shop(state: State) -> State:
         payload = {"order_id": state["order_id"], "action": state["action"], "size": state["size"],
-                   "color": state["color"], "line_number": state["line_number"], "case_id": state["case_id"]}
+                   "color": state["color"], "item_id": state["item_id"], "case_id": state["case_id"]}
         while True:
             decision = interrupt(payload, response_schema=ShopDecision)
             if isinstance(decision, dict) and type(decision.get("approved")) is bool:
@@ -592,8 +590,11 @@ def build_graph(
 
     builder = StateGraph(State, input_schema=InputState, context_schema=OrderContext)
     trace_policy = TracePolicy(process_inputs=trace_state, process_outputs=trace_state)
+    builder.add_node(
+        "collect", collect_order, input_schema=CollectionUpdate, trace_policy=trace_policy,
+        metadata={"description": getdoc(collect_order)},
+    )
     for name, node in (
-        ("collect", collect_order),
         ("request_support_question", write_sav_message),
         ("validate_intent", validate_intention),
     ):
@@ -614,7 +615,7 @@ def build_graph(
     builder.add_edge(START, "collect")
     builder.add_conditional_edges(
         "collect", collection_route,
-        {"continue_collection": "collect", "information": "request_support_question", "request_complete": "validate_intent"},
+        {"information": "request_support_question", "request_complete": "validate_intent"},
     )
     builder.add_conditional_edges(
         "validate_intent", intention_route,
