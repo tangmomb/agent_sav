@@ -30,6 +30,13 @@ Le graphe complet : [pipeline_ecommerce.mmd](pipeline_ecommerce.mmd).
 - **Identité.** Aucun outil ne prend le client en paramètre : il vient du chat ouvert côté serveur.
 - **Chronologie.** Le back-office montre chaque étape qui a mené au dossier, réponses retenues comprises.
 
+## Explorateur de graphes
+
+`/graphs` montre ce que LangGraph Studio ne montre pas : l'état partagé, ce que chaque nœud lit et produit (dans le schéma ou
+non), par où on en sort et à quelle condition, et ce qu'il fait en base, requête par requête. Tout est
+[extrait du code](agent_sav/graph_map.py) ; des tests comparent le résultat aux graphes compilés et à ce que les nœuds
+exécutent vraiment.
+
 ## Évaluation
 
 60 scénarios joués par un client simulé, notés sans LLM sur l'état final de la base. La référence est la version précédente,
@@ -64,7 +71,8 @@ python -m agent_sav web               # http://127.0.0.1:8000
 python -m pytest                      # aucun appel au modèle
 ```
 
-La boutique est sur `/`, le back-office sur `/shop/support`, les mails des clients sur `/support/mailbox`. Ce mode partage une
+La boutique est sur `/`, le back-office sur `/shop/support`, les mails des clients sur `/support/mailbox`, l'explorateur de
+graphes sur `/graphs`. Ce mode partage une
 seule boutique : il n'accepte que cette machine.
 
 ## MCP

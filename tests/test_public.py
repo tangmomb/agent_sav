@@ -67,6 +67,8 @@ def test_nothing_is_shown_before_a_shop_is_opened(public):
         assert visitor.request("GET", path)[0] == 401
     assert visitor.request("POST", "/api/chats", {"customer_id": "CLI-001"})[0] == 401
     assert visitor.request("GET", "/chat.js")[0] == 200
+    assert "Explorateur de graphes" in visitor.request("GET", "/graphs")[1]  # about the code, open to all
+    assert {graph["id"] for graph in json.loads(visitor.request("GET", "/api/graphs")[1])["graphs"]} == {"conversation", "case"}
     visitor.cookie = "sav_demo=forged"
     assert "Ouvrir ma boutique" in visitor.request("GET", "/shop/support")[1]
 
