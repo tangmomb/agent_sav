@@ -1,5 +1,6 @@
-langgraph==1.2.23
+httpx2==2.16.2
 langgraph-checkpoint-postgres==3.2.1
+langgraph==1.2.23
 langsmith==0.15.0
 mistralai==3.8.0
 psycopg[binary]==3.3.9

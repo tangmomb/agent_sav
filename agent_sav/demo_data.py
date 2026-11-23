@@ -74,6 +74,11 @@ def seed_demo(conn) -> None:
                 product_id, _, _, _, sized = products[(index + position * 7 + offset) % len(PRODUCTS)]
                 size = SIZES[(index + position + offset) % len(SIZES)] if sized else None
                 items.append((order_id, purchased_item_id(order_id, position_in_order), product_id, size))
+        if index % 4 == 0:  # a parcel that never arrived: a scarf, or a padded jacket
+            order_id = f"DEMO-{1005 + index * 5}"
+            product_id, _, _, _, sized = products[12 if index % 8 else 15]
+            orders.append((order_id, customer_id, today - timedelta(days=16), "in_transit"))
+            items.append((order_id, purchased_item_id(order_id, 1), product_id, "M" if sized else None))
 
     with conn.cursor() as cursor:
         cursor.executemany("INSERT INTO shop.customers (id, first_name, name) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", customers)
@@ -86,6 +91,8 @@ def seed_demo(conn) -> None:
                VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING""",
             orders,
         )
+        cursor.execute("""UPDATE shop.orders SET delivered_on = ordered_on + 2
+                          WHERE status = 'delivered' AND delivered_on IS NULL""")
         cursor.executemany(
             """INSERT INTO shop.order_items (order_id, item_id, product_id, size)
                VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING""",

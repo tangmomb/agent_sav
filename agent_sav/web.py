@@ -3,18 +3,15 @@ import re
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Event, Thread
 from urllib.parse import parse_qs, urlencode
 from uuid import UUID
 
 import psycopg
-from langchain_core.messages import AIMessage
-from langgraph.types import Command
 
 from . import pages
-from .database import initialize_database, open_checkpointer
-from .shop import Shop
-from .thread_id import CHAT_THREAD
-from .workflow import CUSTOMER_PAUSES, build_graph
+from .database import initialize_database
+from .service import Support, UnknownChat
 
 PACKAGE = Path(__file__).resolve().parent
 INTERFACE = PACKAGE.parent / "interface"
@@ -34,18 +31,31 @@ ROUTES = {
     "/garments.js": (ASSETS / "vetements.js", "text/javascript; charset=utf-8"),
     "/pull.webp": (ASSETS / "pull.webp", "image/webp"),
 }
-THREAD_ID = CHAT_THREAD
-INQUIRY_REPLY = rf"/shop/support/inquiry/({THREAD_ID})"
+TICK_SECONDS = 60
+CASE_ACTION = r"/shop/support/(SAV-[0-9A-F]{8})"
+CHAT_ID = r"chat-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# What the shop can do with a case, and the text it has to give, if any.
+ACTIONS = {"approve": "", "reject": "reason", "answer": "answer", "received": ""}
 NOTICES = {
-    "answered": "Réponse envoyée au client par mail.",
-    "rejected_by_shop": "Demande refusée. Le motif a été communiqué au client.",
-    "completed": "Demande acceptée. Le client a reçu la confirmation par mail.",
+    "answer": "Réponse envoyée au client par mail.",
+    "reject": "Demande refusée. Le motif a été communiqué au client.",
+    "approve": "Demande acceptée. Le client a reçu la confirmation par mail.",
+    "received": "Colis enregistré. Le client a reçu la confirmation par mail.",
 }
 
 
-def serve(dsn: str, port: int) -> None:
-    shop = Shop(dsn)
+def serve(dsn: str, port: int, support: Support | None = None) -> None:
+    support = support or Support(dsn)
+    shop, cases = support.shop, support.cases
     initialize_database(dsn)
+    stopped = Event()
+
+    def keep_time() -> None:
+        while not stopped.wait(TICK_SECONDS):
+            try:
+                support.tick()
+            except psycopg.Error as error:
+                print(f"Échéances non traitées ({type(error).__name__})", flush=True)
 
     class BoutiqueHandler(BaseHTTPRequestHandler):
         def reply(self, status: HTTPStatus, data: bytes, content_type: str) -> None:
@@ -63,10 +73,10 @@ def serve(dsn: str, port: int) -> None:
             self.reply(status, page.encode(), "text/html; charset=utf-8")
 
         def shop_page(self, notice: str = "") -> None:
-            self.html(pages.helpdesk(shop.requests_for_shop(), shop.unanswered_inquiries(), notice))
+            self.html(pages.helpdesk(cases.for_shop(), notice))
 
         def shop_error(self, error: ValueError) -> None:
-            page = pages.helpdesk(shop.requests_for_shop(), shop.unanswered_inquiries(), str(error), error=True)
+            page = pages.helpdesk(cases.for_shop(), str(error), error=True)
             self.html(page, HTTPStatus.BAD_REQUEST)
 
         def shop_done(self, notice: str) -> None:
@@ -82,7 +92,7 @@ def serve(dsn: str, port: int) -> None:
             if customer is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            self.html(pages.mailbox(customers, customer, shop.mailbox(customer["id"])))
+            self.html(pages.mailbox(customers, customer, cases.mailbox(customer["id"])))
 
         def do_GET(self) -> None:
             route, _, query = self.path.partition("?")
@@ -123,106 +133,88 @@ def serve(dsn: str, port: int) -> None:
             path, content_type = asset
             self.reply(HTTPStatus.OK, path.read_bytes(), content_type)
 
+        def read_body(self, limit: int) -> bytes:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= limit:
+                raise ValueError("Formulaire invalide.")
+            return self.rfile.read(length)
+
+        def read_json(self) -> dict:
+            if self.headers.get_content_type() != "application/json":
+                raise ValueError
+            payload = json.loads(self.read_body(8192))
+            if not isinstance(payload, dict):
+                raise ValueError
+            return payload
+
         def do_POST(self) -> None:
-            inquiry_reply = re.fullmatch(INQUIRY_REPLY, self.path)
-            if inquiry_reply:
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 16000:
-                        raise ValueError("Formulaire invalide.")
-                    form = parse_qs(self.rfile.read(length).decode())
-                    answer = form.get("answer", [""])[0].strip()
-                    if not 0 < len(answer) <= 1000:
-                        raise ValueError("Indiquez une réponse de 1 à 1 000 caractères.")
-                    if not shop.answer_inquiry(inquiry_reply[1], answer):
-                        self.send_error(HTTPStatus.NOT_FOUND)
-                        return
-                    self.shop_done("answered")
-                except ValueError as error:
-                    self.shop_error(error)
-                except psycopg.Error:
-                    self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
-                return
-            shop_reply = re.fullmatch(rf"/shop/support/({THREAD_ID})", self.path)
-            if shop_reply:
-                try:
-                    thread_id = shop.request_thread(shop_reply[1])
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if not 0 < length <= 16000:
-                        raise ValueError("Formulaire invalide.")
-                    form = parse_qs(self.rfile.read(length).decode())
-                    reply = form.get("decision", [""])[0]
-                    reason = form.get("reason", [""])[0].strip()
-                    if reply not in {"yes", "no"} or (reply == "no" and not 0 < len(reason) <= 1000):
-                        raise ValueError("Indiquez un motif pour refuser la demande.")
-                    if not thread_id:
-                        self.send_error(HTTPStatus.NOT_FOUND)
-                        return
-                    status = self.shop_decision(thread_id, {"approved": reply == "yes", "reason": reason})
-                    self.shop_done(status)
-                except ValueError as error:
-                    self.shop_error(error)
-                except psycopg.Error:
-                    self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
-                return
-            if self.path != "/api/support":
+            if action := re.fullmatch(CASE_ACTION, self.path):
+                self.shop_action(action[1])
+            elif self.path == "/api/chats":
+                self.open_chat()
+            elif self.path == "/api/support":
+                self.support_message()
+            else:
                 self.send_error(HTTPStatus.NOT_FOUND)
-                return
+
+        def shop_action(self, case_id: str) -> None:
             try:
-                length = int(self.headers.get("Content-Length", "0"))
-                if not 0 < length <= 8192 or self.headers.get_content_type() != "application/json":
+                form = parse_qs(self.read_body(16000).decode())
+                action = form.get("action", [""])[0]
+                if action not in ACTIONS:
+                    raise ValueError("Action inconnue.")
+                payload = {}
+                if field := ACTIONS[action]:
+                    text = form.get(field, [""])[0].strip()
+                    if not 0 < len(text) <= 1000:
+                        raise ValueError("Indiquez un texte de 1 à 1 000 caractères.")
+                    payload = {field: text}
+                support.act(case_id, action, payload)
+                self.shop_done(action)
+            except ValueError as error:  # including an action the case does not expect
+                self.shop_error(error)
+            except psycopg.Error:
+                self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
+
+        def open_chat(self) -> None:
+            """Signs a customer in. The demo has no password: it only offers fictional accounts."""
+            try:
+                chat_id = shop.open_chat(str(self.read_json()["customer_id"]))
+                if chat_id is None:
                     raise ValueError
-                payload = json.loads(self.rfile.read(length))
-                thread_id, message = payload["thread_id"], payload["message"].strip()
+            except (ValueError, KeyError):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Client introuvable."})
+            except psycopg.Error:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Le SAV est momentanément indisponible."})
+            else:
+                self.send_json(HTTPStatus.OK, {"chat_id": chat_id})
+
+        def support_message(self) -> None:
+            try:
+                payload = self.read_json()
+                chat_id, message = payload["chat_id"], payload["message"].strip()
                 message_id = str(UUID(payload["message_id"])) if "message_id" in payload else None
-                if not re.fullmatch(THREAD_ID, thread_id) or not 0 < len(message) <= 1000:
+                if not re.fullmatch(CHAT_ID, chat_id) or not 0 < len(message) <= 1000:
                     raise ValueError
-            except (ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+            except (ValueError, KeyError, TypeError, AttributeError):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"error": "La demande n’a pas pu être lue."})
                 return
             try:
-                self.send_json(HTTPStatus.OK, self.chat(thread_id, message, message_id))
+                self.send_json(HTTPStatus.OK, support.chat(chat_id, message, message_id))
+            except UnknownChat:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "La demande n’a pas pu être lue."})
             except Exception as error:
-                self.log_error("Échec du dossier SAV (%s)", type(error).__name__)
+                self.log_error("Échec du chat SAV (%s)", type(error).__name__)
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {
                     "error": "Le SAV est momentanément indisponible. Vous pouvez réessayer.",
                 })
 
-        def shop_decision(self, thread_id: str, decision: dict) -> str:
-            config = {"configurable": {"thread_id": thread_id}, "run_name": "SAV boutique", "tags": ["shop"]}
-            with open_checkpointer(dsn) as checkpointer, psycopg.connect(dsn) as lock:
-                lock.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (thread_id,))
-                graph = build_graph(checkpointer, shop)
-                snapshot = graph.get_state(config)
-                if snapshot.next != ("shop_review",):
-                    raise ValueError("Le dossier n’attend pas cette décision.")
-                graph.invoke(Command(resume=decision), config, durability="sync")
-                return graph.get_state(config).values["status"]
-
-        def chat(self, thread_id: str, message: str, message_id: str | None) -> dict:
-            """Passes a customer message to the graph and returns its answer."""
-            config = {"configurable": {"thread_id": thread_id}, "run_name": "SAV boutique", "tags": ["shop"]}
-            with open_checkpointer(dsn) as checkpointer, psycopg.connect(dsn) as lock:
-                lock.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (thread_id,))
-                graph = build_graph(checkpointer, shop)
-                snapshot = graph.get_state(config)
-                received = any(m.id == message_id for m in snapshot.values.get("messages", [])) if message_id else False
-                if not received:
-                    if not snapshot.values:
-                        graph.invoke({"messages": [{"type": "human", "content": message, "id": message_id}]},
-                                     config, durability="sync")
-                    elif snapshot.next in CUSTOMER_PAUSES:
-                        reply = {"message": message} | ({"id": message_id} if message_id else {})
-                        graph.invoke(Command(resume=reply), config, durability="sync")
-                snapshot = graph.get_state(config)
-            if snapshot.next in CUSTOMER_PAUSES:
-                return {"question": snapshot.interrupts[0].value["question"], "awaiting_message": True}
-            answer = next(str(m.text) for m in reversed(snapshot.values["messages"]) if isinstance(m, AIMessage))
-            return {"status": snapshot.values.get("status"), "messages": [{"role": "assistant", "content": answer}]}
-
     with ThreadingHTTPServer(("127.0.0.1", port), BoutiqueHandler) as server:
         print(f"Boutique de démonstration : http://127.0.0.1:{server.server_port}", flush=True)
+        Thread(target=keep_time, daemon=True).start()
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
+        finally:
+            stopped.set()

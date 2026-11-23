@@ -1,5 +1,8 @@
 {
   "dependencies": ["."],
-  "graphs": {"support": "./agent_sav/studio.py:graph"},
+  "graphs": {
+    "conversation": "./agent_sav/studio.py:conversation",
+    "case": "./agent_sav/studio.py:case"
+  },
   "env": ".env"
 }

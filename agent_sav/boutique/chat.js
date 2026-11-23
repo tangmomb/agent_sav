@@ -58,9 +58,14 @@ function say(chat, text, speaker = "agent") {
 
 function welcome(chat, firstName) {
   say(chat, `Bonjour ${firstName}, comment pouvons-nous vous aider ?`);
+  offer(chat, ["Échanger un article", "Retourner un article", "Suivre ma commande"]);
+}
+
+function offer(chat, labels) {
+  chat.suggestions?.remove();
   chat.suggestions = document.createElement("div");
   chat.suggestions.className = "suggestions";
-  chat.suggestions.append(...["Échanger un article", "Retourner un article"].map((label) => {
+  chat.suggestions.append(...labels.map((label) => {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
@@ -68,11 +73,23 @@ function welcome(chat, firstName) {
     return button;
   }));
   chat.log.append(chat.suggestions);
+  chat.log.scrollTop = chat.log.scrollHeight;
 }
 
 function showResult(chat, result) {
-  const text = result.question || result.messages?.at(-1)?.content;
-  if (text) say(chat, text);
+  for (const text of result.messages) say(chat, text);
+  if (result.awaiting_confirmation) offer(chat, ["Oui, je confirme", "Non, merci"]);
+}
+
+async function post(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error);
+  return result;
 }
 
 function updateComposer(chat) {
@@ -94,17 +111,11 @@ async function send(chat, payload) {
   updateComposer(chat);
   const pending = say(chat, "Un instant…");
   try {
-    const response = await fetch("/api/support", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error);
+    chat.id ??= (await post("/api/chats", {customer_id: chat.customerId})).chat_id;
+    const result = await post("/api/support", {chat_id: chat.id, ...payload});
     pending.remove();
     chat.failedPayload = undefined;
     showResult(chat, result);
-    chat.threadId = result.awaiting_message ? payload.thread_id : undefined;
   } catch {
     pending.textContent = "Le message n’a pas abouti. Renvoyez-le pour réessayer.";
     chat.failedPayload = payload;
@@ -123,12 +134,11 @@ async function send(chat, payload) {
 function submitMessage(chat, message) {
   if (chat.waiting) return;
   const retry = chat.failedPayload?.message === message ? chat.failedPayload : undefined;
-  const threadId = chat.threadId ?? chat.customerId + ":" + crypto.randomUUID();
   chat.suggestions.remove();
   if (!retry) say(chat, message, "customer");
   chat.draft = "";
   if (chat === active) input.value = "";
-  send(chat, retry ?? {thread_id: threadId, message_id: crypto.randomUUID(), message});
+  send(chat, retry ?? {message_id: crypto.randomUUID(), message});
 }
 
 input.addEventListener("input", () => { active.draft = input.value; });
