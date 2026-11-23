@@ -13,6 +13,7 @@ import psycopg
 from . import pages
 from .alerts import alert_operator
 from .database import initialize_database
+from .graph_map import graph_map
 from .sandboxes import BudgetSpent, Full, Limit, Sandboxes
 from .service import Support, UnknownChat
 
@@ -32,6 +33,9 @@ ROUTES = {
     "/mailbox.css": (ASSETS / "mailbox.css", "text/css; charset=utf-8"),
     "/mailbox.js": (ASSETS / "mailbox.js", "text/javascript; charset=utf-8"),
     "/garments.js": (ASSETS / "vetements.js", "text/javascript; charset=utf-8"),
+    "/graphs": (INTERFACE / "graphes.html", "text/html; charset=utf-8"),
+    "/graphs.css": (INTERFACE / "graphes.css", "text/css; charset=utf-8"),
+    "/graphs.js": (INTERFACE / "graphes.js", "text/javascript; charset=utf-8"),
     "/pull.webp": (ASSETS / "pull.webp", "image/webp"),
 }
 TICK_SECONDS = 60
@@ -174,6 +178,9 @@ def serve(dsn: str, port: int, support: Support | None = None, *, host: str = "1
             if (asset := ROUTES.get(route)) and not (sandboxes and route in ("/", "/orders")):
                 path, content_type = asset
                 self.reply(HTTPStatus.OK, path.read_bytes(), content_type)
+                return
+            if route == "/api/graphs":  # about the code, not about anyone's shop
+                self.send_json(HTTPStatus.OK, graph_map())
                 return
             customer = re.fullmatch(r"/api/customers/(CLI-[0-9]{3})/orders", route)
             try:
