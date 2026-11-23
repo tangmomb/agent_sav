@@ -1,20 +1,20 @@
 import json
 import re
-from html import escape
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode
 from uuid import UUID
 
 import psycopg
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
+from . import pages
 from .database import initialize_database, open_checkpointer
 from .shop import Shop
 from .thread_id import CHAT_THREAD
-from .workflow import build_graph
+from .workflow import CUSTOMER_PAUSES, build_graph
 
 PACKAGE = Path(__file__).resolve().parent
 INTERFACE = PACKAGE.parent / "interface"
@@ -26,11 +26,18 @@ ROUTES = {
     "/shop.css": (ASSETS / "boutique.css", "text/css; charset=utf-8"),
     "/chat.js": (ASSETS / "chat.js", "text/javascript; charset=utf-8"),
     "/orders.js": (ASSETS / "achats.js", "text/javascript; charset=utf-8"),
+    "/catalogue.js": (ASSETS / "catalogue.js", "text/javascript; charset=utf-8"),
+    "/helpdesk.css": (ASSETS / "helpdesk.css", "text/css; charset=utf-8"),
+    "/helpdesk.js": (ASSETS / "helpdesk.js", "text/javascript; charset=utf-8"),
+    "/mailbox.css": (ASSETS / "mailbox.css", "text/css; charset=utf-8"),
+    "/mailbox.js": (ASSETS / "mailbox.js", "text/javascript; charset=utf-8"),
+    "/garments.js": (ASSETS / "vetements.js", "text/javascript; charset=utf-8"),
     "/pull.webp": (ASSETS / "pull.webp", "image/webp"),
 }
 THREAD_ID = CHAT_THREAD
 INQUIRY_REPLY = rf"/shop/support/inquiry/({THREAD_ID})"
-STATUS_LABELS = {
+NOTICES = {
+    "answered": "Réponse envoyée au client par mail.",
     "rejected_by_shop": "Demande refusée. Le motif a été communiqué au client.",
     "completed": "Demande acceptée. Le client a reçu la confirmation par mail.",
 }
@@ -52,92 +59,37 @@ def serve(dsn: str, port: int) -> None:
         def send_json(self, status: HTTPStatus, data: dict) -> None:
             self.reply(status, json.dumps(data, ensure_ascii=False).encode(), "application/json")
 
-        def page(self, title: str, body: str, status: HTTPStatus = HTTPStatus.OK) -> None:
-            title = escape(title)
-            mail_current = ' aria-current="page"' if title == "Boîte mail de démonstration" else ""
-            shop_current = ' aria-current="page"' if title == "Demandes SAV" else ""
-            html = f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1">
-                <title>{title} · Maison Orme</title>
-                <link rel="stylesheet" href="/theme.css"><link rel="stylesheet" href="/shop.css">
-                </head><body>
-                <header class="site-header"><div class="shell header-inner">
-                  <a class="wordmark" href="/orders">Maison Orme<span>.</span></a>
-                  <nav class="site-nav" aria-label="Navigation">
-                    <a href="/orders">Mes achats</a>
-                    <a href="/support/mailbox"{mail_current}>Boîte mail</a>
-                    <a href="/shop/support"{shop_current}>Espace boutique</a>
-                  </nav>
-                </div></header>
-                <main class="shell"><h1 class="page-heading">{title}</h1>{body}</main>
-                </body></html>"""
-            self.reply(status, html.encode(), "text/html; charset=utf-8")
+        def html(self, page: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+            self.reply(status, page.encode(), "text/html; charset=utf-8")
 
-        def shop_page(self) -> None:
-            cards = []
-            for request in shop.requests_for_shop():
-                thread_id = request["thread_id"]
-                action_label = "Retour" if request["action"] == "return" else "Échange"
-                variant = " · ".join(escape(value) for value in (request["name"], request["color"], request["size"]) if value)
-                cards.append(f"""<article class="order-card support-card">
-                    <h2>{action_label} · {escape(request["order_id"])}</h2>
-                    <p>{escape(request["customer_id"])} · {variant}</p>
-                    <form class="refusal-form" method="post" action="/shop/support/{thread_id}">
-                      <button class="contact" name="decision" value="yes">Valider</button>
-                      <label for="motif-{thread_id}">Motif du refus
-                        <input class="control" id="motif-{thread_id}" name="reason" maxlength="1000">
-                      </label>
-                      <button class="contact secondary" name="decision" value="no">Refuser</button>
-                    </form></article>""")
-            for inquiry in shop.unanswered_inquiries():
-                thread_id = inquiry["thread_id"]
-                question = escape(inquiry["question"]).replace("\n", "<br>")
-                cards.append(f"""<article class="order-card support-card">
-                    <h2>Renseignement · {escape(inquiry["customer_id"])}</h2>
-                    <p>{question}</p>
-                    <form class="refusal-form" method="post" action="/shop/support/inquiry/{thread_id}">
-                      <label for="answer-{thread_id}">Réponse
-                        <textarea class="control" id="answer-{thread_id}" name="answer" maxlength="1000" required></textarea>
-                      </label>
-                      <button class="contact" type="submit">Envoyer la réponse</button>
-                    </form></article>""")
-            self.page("Demandes SAV", "".join(cards) or '<p class="empty-state">Aucune demande en attente.</p>')
+        def shop_page(self, notice: str = "") -> None:
+            self.html(pages.helpdesk(shop.requests_for_shop(), shop.unanswered_inquiries(), notice))
+
+        def shop_error(self, error: ValueError) -> None:
+            page = pages.helpdesk(shop.requests_for_shop(), shop.unanswered_inquiries(), str(error), error=True)
+            self.html(page, HTTPStatus.BAD_REQUEST)
+
+        def shop_done(self, notice: str) -> None:
+            """Back to the list, so that reloading it does not send the form again."""
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/shop/support?" + urlencode({"done": notice}))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def mailbox_page(self, customer_id: str | None) -> None:
             customers = shop.customers()
-            if not customers:
-                self.page("Boîte mail de démonstration", '<p class="empty-state">Aucun compte de démonstration disponible.</p>')
-                return
-            if customer_id is None:
-                customer_id = customers[0]["id"]
-            if not any(customer["id"] == customer_id for customer in customers):
+            customer = next((each for each in customers if customer_id in (None, each["id"])), None)
+            if customer is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-
-            options = []
-            for customer in customers:
-                selected = " selected" if customer["id"] == customer_id else ""
-                options.append(f'<option value="{escape(customer["id"])}"{selected}>{escape(customer["first_name"])} {escape(customer["name"])}</option>')
-            picker = f"""<form class="account mailbox-account" method="get" action="/support/mailbox">
-                <label for="mailbox-customer">Compte de démo</label>
-                <select class="control" id="mailbox-customer" name="customer">{"".join(options)}</select>
-                <button class="contact" type="submit">Ouvrir la boîte mail</button>
-            </form>"""
-
-            cards = []
-            for message in shop.mailbox(customer_id):
-                cards.append(
-                    f'<article class="order-card support-card"><h2>{"Agent SAV" if message["sender"] == "sav" else "Boutique"}</h2>'
-                    f'<p>{escape(message["body"]).replace(chr(10), "<br>")}</p></article>'
-                )
-            self.page("Boîte mail de démonstration", picker + ("".join(cards) or '<p class="empty-state">Aucun message.</p>'))
+            self.html(pages.mailbox(customers, customer, shop.mailbox(customer["id"])))
 
         def do_GET(self) -> None:
             route, _, query = self.path.partition("?")
             customer = re.fullmatch(r"/api/customers/(CLI-[0-9]{3})/orders", route)
             try:
                 if route == "/shop/support":
-                    self.shop_page()
+                    self.shop_page(NOTICES.get(parse_qs(query).get("done", [""])[0], ""))
                     return
                 if route == "/support/mailbox":
                     customer_id = parse_qs(query).get("customer", [None])[0]
@@ -149,6 +101,9 @@ def serve(dsn: str, port: int) -> None:
                     return
                 if route == "/api/customers":
                     self.send_json(HTTPStatus.OK, {"customers": shop.customers()})
+                    return
+                if route == "/api/products":
+                    self.send_json(HTTPStatus.OK, {"products": shop.products()})
                     return
                 if customer:
                     orders = shop.orders(customer[1])
@@ -182,9 +137,9 @@ def serve(dsn: str, port: int) -> None:
                     if not shop.answer_inquiry(inquiry_reply[1], answer):
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
-                    self.page("Demande SAV", "<p>Réponse disponible dans la boîte mail de démonstration du client.</p>")
+                    self.shop_done("answered")
                 except ValueError as error:
-                    self.page("Demande SAV", f"<p>{escape(str(error))}</p>", HTTPStatus.BAD_REQUEST)
+                    self.shop_error(error)
                 except psycopg.Error:
                     self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
                 return
@@ -204,9 +159,9 @@ def serve(dsn: str, port: int) -> None:
                         self.send_error(HTTPStatus.NOT_FOUND)
                         return
                     status = self.shop_decision(thread_id, {"approved": reply == "yes", "reason": reason})
-                    self.page("Demande SAV", f"<p>{STATUS_LABELS[status]}</p>")
+                    self.shop_done(status)
                 except ValueError as error:
-                    self.page("Demande SAV", f"<p>{escape(str(error))}</p>", HTTPStatus.BAD_REQUEST)
+                    self.shop_error(error)
                 except psycopg.Error:
                     self.send_error(HTTPStatus.SERVICE_UNAVAILABLE)
                 return
@@ -256,13 +211,13 @@ def serve(dsn: str, port: int) -> None:
                     if not snapshot.values:
                         graph.invoke({"messages": [{"type": "human", "content": message, "id": message_id}]},
                                      config, durability="sync")
-                    elif snapshot.next == ("ask",):
+                    elif snapshot.next in CUSTOMER_PAUSES:
                         reply = {"message": message} | ({"id": message_id} if message_id else {})
                         graph.invoke(Command(resume=reply), config, durability="sync")
                 snapshot = graph.get_state(config)
+            if snapshot.next in CUSTOMER_PAUSES:
+                return {"question": snapshot.interrupts[0].value["question"], "awaiting_message": True}
             answer = next(str(m.text) for m in reversed(snapshot.values["messages"]) if isinstance(m, AIMessage))
-            if snapshot.next == ("ask",):
-                return {"question": answer, "awaiting_message": True}
             return {"status": snapshot.values.get("status"), "messages": [{"role": "assistant", "content": answer}]}
 
     with ThreadingHTTPServer(("127.0.0.1", port), BoutiqueHandler) as server:

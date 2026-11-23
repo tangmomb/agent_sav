@@ -52,7 +52,3 @@ main { flex: 1; padding-block: clamp(2.5rem, 6vw, 4.5rem) 4rem; }
 .page-heading p { margin-top: .75rem; color: var(--muted); }
 .site-footer { border-top: 1px solid var(--line); color: var(--muted); }
 .footer-inner { padding-block: 1.2rem; font-size: .8125rem; }
-
-@media (max-width: 36rem) {
-  .shell { width: calc(100% - 2rem); }
-}

@@ -23,6 +23,7 @@ export function openChat(customerId, customerName) {
       placeholder: "Écrivez votre message…",
     };
     conversations.set(customerId, chat);
+    welcome(chat, customerName.split(" ")[0]);
   }
   active = conversations.get(customerId);
   log.replaceWith(active.log);
@@ -53,6 +54,20 @@ function say(chat, text, speaker = "agent") {
   chat.log.append(message);
   chat.log.scrollTop = chat.log.scrollHeight;
   return message;
+}
+
+function welcome(chat, firstName) {
+  say(chat, `Bonjour ${firstName}, comment pouvons-nous vous aider ?`);
+  chat.suggestions = document.createElement("div");
+  chat.suggestions.className = "suggestions";
+  chat.suggestions.append(...["Échanger un article", "Retourner un article"].map((label) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", () => submitMessage(chat, label));
+    return button;
+  }));
+  chat.log.append(chat.suggestions);
 }
 
 function showResult(chat, result) {
@@ -109,6 +124,7 @@ function submitMessage(chat, message) {
   if (chat.waiting) return;
   const retry = chat.failedPayload?.message === message ? chat.failedPayload : undefined;
   const threadId = chat.threadId ?? chat.customerId + ":" + crypto.randomUUID();
+  chat.suggestions.remove();
   if (!retry) say(chat, message, "customer");
   chat.draft = "";
   if (chat === active) input.value = "";

@@ -19,15 +19,18 @@ MODEL = "zai-glm-5-3-flash"
 
 
 class Found(BaseModel):
-    """What the latest message says. None means the message does not say."""
+    """What the latest message says. None means the message does not say.
+
+    No defaults: with optional fields, the model sometimes leaves out a value it did find.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    action: Literal["information", "return", "exchange"] | None = None
-    item_id: str | None = None
-    size: Literal["S", "M", "L", "XL"] | None = None
-    color: str | None = None
-    question: str | None = None
+    action: Literal["information", "return", "exchange", "cancel"] | None
+    item_id: str | None
+    size: Literal["S", "M", "L", "XL"] | None
+    color: str | None
+    question: str | None
 
 
 def understand(message: str, request: dict, items: list[dict], history: list[dict]) -> dict:
@@ -36,6 +39,12 @@ def understand(message: str, request: dict, items: list[dict], history: list[dic
     found = read(message, request, items, history)
     if found.item_id not in {item["item_id"] for item in items}:
         found.item_id = None
+    # A first message has nothing to give up yet, and a bare no only refuses the summary.
+    # « Annuler », which the summary suggests, always gives up.
+    if history and re.fullmatch(r"[^a-z]*annule[rz]?[^a-z]*", normalize(message)):
+        found.action = "cancel"
+    elif found.action == "cancel" and (not history or re.fullmatch(r"\W*non\W*", normalize(message))):
+        found.action = None
     return found.model_dump()
 
 
@@ -45,21 +54,31 @@ def understand_mistral(message: str, request: dict, items: list[dict], history: 
         "context": {
             "known_request": request,
             "delivered_items": [
-                {key: item[key] for key in ("item_id", "order_id", "name", "color", "size")} for item in items
+                {key: item[key] for key in ("item_id", "order_id", "ordered_on", "name", "color", "size")}
+                for item in items
             ],
             "recent_messages": history,
         },
     }
     instruction = (
-        "Tu aides le SAV d’une boutique de vêtements. Lis le dernier message du client et renvoie seulement "
-        "ce qu’il apporte de nouveau à sa demande. Utilise recent_messages pour comprendre les réponses courtes "
-        "(« le deuxième », « en M »). "
+        "Tu aides le SAV d’une boutique de vêtements. Lis le dernier message du client (user_message) et "
+        "remplis les cinq champs : la valeur que ce message donne ou corrige, sinon null. Les valeurs de known_request "
+        "sont déjà enregistrées : ne les recopie pas. Utilise recent_messages seulement pour comprendre les réponses "
+        "courtes (« le deuxième », « en M »). "
+        "Exemples, pour un échange en taille M déjà connu : « non, plutôt en L » → size L et le reste null ; "
+        "« oui mais en noir » → color Noir et le reste null ; « non, c’est l’autre article » → item_id de cet article "
+        "et le reste null ; « non » → tout à null. "
         "action : information pour une question à la boutique (suivi, délais, conditions…), return pour renvoyer "
         "un article, exchange pour l’échanger contre une autre taille ou un autre coloris (un article trop petit "
-        "ou trop grand appelle un échange) ; null si le message ne le dit pas. "
+        "ou trop grand appelle un échange), cancel si le client renonce à la demande en cours dans cette conversation "
+        "(« annuler », « laisse tomber », « finalement je garde tout »), sans en formuler une autre ; null si le message "
+        "ne le dit pas. « Je veux annuler ma commande » concerne un achat, pas la demande en cours : action information "
+        "et question sur l’annulation de la commande. "
         "question : pour une demande d’information, la question du client reformulée en une phrase ; "
         "null s’il annonce seulement qu’il a une question. "
         "item_id : copie exactement l’item_id de delivered_items si le message désigne un seul article. "
+        "Si le client parle d’une commande (« ma dernière commande »), retrouve-la avec ordered_on ; si elle contient "
+        "plusieurs articles et que le message ne précise pas lequel, item_id est null. "
         "size et color : la taille et le coloris voulus pour un échange, jamais ceux de l’article acheté. "
         "Mets null pour tout ce que le message ne dit pas."
     )
@@ -74,9 +93,23 @@ def normalize(text: str) -> str:
     return "".join(letter for letter in text if not unicodedata.combining(letter)).casefold()
 
 
+YES = (r"(?:oui|ouais|yes|ok|d['’]accord|c['’]est (?:bon|ca|correct|exact)|tout est (?:bon|correct)|parfait|exact|"
+       r"(?:je )?(?:confirme|valide)(?: (?:le|la|ma|mon|cette|cet|ce) (?:demande|retour|echange))?)")
+
+
+def confirms(message: str) -> bool:
+    """Whether the message is only a yes. « Oui, mais en L » is not."""
+    polite = r"(?:merci|svp|s['’]il vous plait|pour moi)"
+    return bool(re.fullmatch(rf"\W*{YES}(?:\W+(?:{YES}|{polite}))*\W*", normalize(message)))
+
+
 def understand_rules(message: str, request: dict, items: list[dict], history: list[dict]) -> Found:
     text = normalize(message)
-    found = Found()
+    found = Found(**dict.fromkeys(Found.model_fields))
+    gives_up = re.search(r"\b(?:laisse[rz]? tomber|j['’]abandonne|abandonner|annule[rz]?|plus besoin)\b", text)
+    if history and gives_up and not re.search(r"\b(?:commande|colis|livraison|comment)\b|\?$", text):
+        found.action = "cancel"
+        return found
     if re.search(r"\b(?:question|renseignement|information|suivi|ou en est|delai|quand|comment)\b|\?$", text):
         found.action = "information"
     if re.search(r"\b(?:retour\w*|retourner|renvo\w*|rembours\w*)\b", text) and not re.search(r"\bcomment\b", text):
@@ -98,7 +131,7 @@ def understand_rules(message: str, request: dict, items: list[dict], history: li
 
     if match := re.search(r"\bitem-[\w-]+", text):
         found.item_id = match[0].upper()
-    elif request["item_id"] is None and items:
+    elif items:
         last_question = next((entry["content"] for entry in reversed(history) if entry["role"] == "sav"), "")
         listed = bool(re.search(r"^1\. ", last_question, re.MULTILINE))
         number = re.fullmatch(r"\W*(?:le |la |l'|article |numero )?(\d+)\W*", text)
@@ -161,7 +194,10 @@ def classify_with_mistral(
     messages: list[dict[str, str]], schema: type[Response], *, structured_input: dict | None = None,
 ) -> ParsedChatCompletionResponse[Response]:
     with Mistral(api_key=os.environ["MISTRAL_API_KEY"], timeout_ms=30000) as client:
-        return client.chat.parse(model=MODEL, messages=messages, response_format=schema, max_tokens=1536)
+        return client.chat.parse(
+            model=MODEL, messages=messages, response_format=schema, max_tokens=1536,
+            reasoning_effort="high",  # measured: "low" misses articles, the default can use every token reasoning
+        )
 
 
 def parse_response(

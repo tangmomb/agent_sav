@@ -4,11 +4,15 @@ The agent first finds out what the customer wants, then asks only for what that 
 
 - information: the question for the shop;
 - return: the purchased article;
-- exchange: the purchased article and the wanted size and/or color, in stock.
+- exchange: the purchased article and the wanted size and/or color, in stock;
+- cancel: nothing, the customer gives up before anything is recorded.
 
     understand ⇄ ask            (one question per turn until the request is complete)
         ├─ information → send_question
-        └─ return / exchange → register_request → shop_review
+        ├─ cancel → cancel_request
+        └─ return / exchange → validate_request → register_request → shop_review
+
+validate_request sums up the request; without a clear yes, the customer's reply goes back to understand.
 """
 
 from typing import Annotated, Literal, NotRequired, TypedDict
@@ -20,11 +24,11 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import interrupt
 
 from .demo_data import SIZES
-from .model import understand as read_message
+from .model import confirms, understand as read_message
 from .shop import OutOfStock, Shop
 from .thread_id import customer_of
 
-Action = Literal["information", "return", "exchange"]
+Action = Literal["information", "return", "exchange", "cancel"]
 
 
 class State(MessagesState, total=False):
@@ -34,6 +38,10 @@ class State(MessagesState, total=False):
     color: str | None  # exchange
     question: str | None  # information
     status: str  # where the request stands, once it is complete
+
+
+# The steps that wait for a message from the customer.
+CUSTOMER_PAUSES = (("ask",), ("validate_request",))
 
 
 # What each pause expects on resume. Studio shows them as forms; LangGraph rejects other values.
@@ -65,6 +73,8 @@ def build_graph(checkpointer, shop: Shop, *, simulate_timeout: bool = False):
     def next_question(request: dict, items: list[dict]) -> str | None:
         """Returns what to ask next, or None when the request is complete. May clear invalid values."""
         action = request["action"]
+        if action == "cancel":
+            return None
         if action is None:
             return "Bonjour ! Souhaitez-vous poser une question, échanger ou retourner un article ?"
         if action == "information":
@@ -109,7 +119,10 @@ def build_graph(checkpointer, shop: Shop, *, simulate_timeout: bool = False):
             for m in state["messages"][-7:-1]
         ])
         if found.get("action") and found["action"] != request["action"]:
-            request.update(item_id=None, size=None, color=None, question=None)
+            same_article = {request["action"], found["action"]} == {"return", "exchange"}
+            request.update(item_id=request["item_id"] if same_article else None, size=None, color=None, question=None)
+        if found.get("item_id") and request["item_id"] and found["item_id"] != request["item_id"]:
+            request.update(size=None, color=None)  # they were about the other article
         request.update({key: value for key, value in found.items() if value is not None})
         question = next_question(request, items)
         return {**request, "messages": [AIMessage(content=question)] if question else []}
@@ -122,7 +135,34 @@ def build_graph(checkpointer, shop: Shop, *, simulate_timeout: bool = False):
     def route(state: State) -> str:
         if isinstance(state["messages"][-1], AIMessage):
             return "ask"
-        return "send_question" if state["action"] == "information" else "register_request"
+        return {"information": "send_question", "cancel": "cancel_request"}.get(state["action"], "validate_request")
+
+    def validate_request(state: State, config: RunnableConfig) -> State:
+        """Sums up the return or exchange and waits for the customer's agreement."""
+        items = shop.delivered_items(customer_of(thread(config)))
+        item = next(item for item in items if item["item_id"] == state["item_id"])
+        if state["action"] == "return":
+            summary = f"Retour : {article(item)}"
+        else:
+            wanted = " · ".join(value for value in (state["color"], state["size"]) if value)
+            summary = f"Échange : {article(item)}\nContre : {wanted}"
+        last_answer = next((str(m.text) for m in reversed(state["messages"]) if isinstance(m, AIMessage)), "")
+        if summary in last_answer:  # the customer did not agree, but did not say what to change either
+            recap = (f"Que souhaitez-vous changer ?\n{summary}\n"
+                     "Indiquez la modification, « oui » pour confirmer cette demande ou « annuler » pour l’abandonner.")
+        else:
+            recap = (f"Voici votre demande :\n{summary}\n"
+                     "Répondez « oui » pour confirmer, « annuler » pour abandonner, ou dites-moi ce qu’il faut changer.")
+        reply = interrupt({"question": recap}, response_schema=CustomerReply)
+        return {"messages": [AIMessage(content=recap), HumanMessage(content=reply["message"], id=reply.get("id"))]}
+
+    def route_validation(state: State) -> str:
+        return "register_request" if confirms(str(state["messages"][-1].text)) else "understand"
+
+    def cancel_request(state: State) -> State:
+        return {**dict.fromkeys(("action", "item_id", "size", "color", "question")), "status": "cancelled", "messages": [
+            AIMessage(content="Votre demande est abandonnée, rien n’a été transmis à la boutique."),
+        ]}
 
     def send_question(state: State, config: RunnableConfig) -> State:
         shop.submit_inquiry(thread(config), customer_of(thread(config)), state["question"])
@@ -154,12 +194,14 @@ def build_graph(checkpointer, shop: Shop, *, simulate_timeout: bool = False):
 
     # A conversation starts from the customer's message only; the agent fills in the other fields.
     builder = StateGraph(State, input_schema=MessagesState)
-    for node in (understand, ask, send_question, register_request, shop_review):
+    for node in (understand, ask, send_question, cancel_request, validate_request, register_request, shop_review):
         builder.add_node(node.__name__, node)
     builder.add_edge(START, "understand")
-    builder.add_conditional_edges("understand", route, ["ask", "send_question", "register_request"])
+    builder.add_conditional_edges("understand", route, ["ask", "send_question", "cancel_request", "validate_request"])
     builder.add_edge("ask", "understand")
     builder.add_edge("send_question", END)
+    builder.add_edge("cancel_request", END)
+    builder.add_conditional_edges("validate_request", route_validation, ["register_request", "understand"])
     builder.add_conditional_edges(
         "register_request", lambda state: "shop_review" if state["status"] == "awaiting_shop" else END,
         ["shop_review", END],

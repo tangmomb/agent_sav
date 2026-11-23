@@ -12,7 +12,7 @@ from langgraph.types import Command
 from .database import initialize_database, open_checkpointer
 from .demo_data import DEMO_CUSTOMER
 from .shop import DEFAULT_DSN, Shop
-from .workflow import LostResponse, build_graph
+from .workflow import CUSTOMER_PAUSES, LostResponse, build_graph
 
 
 def main() -> int:
@@ -23,7 +23,7 @@ def main() -> int:
     start = commands.add_parser("open", help="Ouvre un dossier avec un premier message")
     start.add_argument("message")
     start.add_argument("--customer", default=DEMO_CUSTOMER)
-    say = commands.add_parser("say", help="Répond à la question du SAV")
+    say = commands.add_parser("say", help="Répond à la question ou au récapitulatif du SAV")
     say.add_argument("thread_id")
     say.add_argument("message")
     decide = commands.add_parser("decide", help="Enregistre la décision de la boutique")
@@ -62,8 +62,8 @@ def main() -> int:
             snapshot = graph.get_state(config)
             if args.command != "open" and not snapshot.values:
                 raise ValueError("Dossier SAV introuvable.")
-            expected = {"say": "ask", "decide": "shop_review"}.get(args.command)
-            if expected and snapshot.next != (expected,):
+            expected = {"say": CUSTOMER_PAUSES, "decide": (("shop_review",),)}.get(args.command)
+            if expected and snapshot.next not in expected:
                 raise ValueError(f"Ce dossier n’attend pas cette étape (étape en cours : {', '.join(snapshot.next) or 'aucune'}).")
             if args.command == "resume" and not any(task.error for task in snapshot.tasks):
                 raise ValueError("Ce dossier n'a pas d'exécution à reprendre.")
@@ -83,6 +83,8 @@ def main() -> int:
             {"role": "client" if isinstance(m, HumanMessage) else "sav", "content": str(m.text)}
             for m in snapshot.values["messages"]
         ]}
+        if snapshot.next in CUSTOMER_PAUSES:
+            output["question"] = snapshot.interrupts[0].value["question"]
         if output.get("status") == "completed":
             output["reference"] = shop.reference(thread_id)
         print(json.dumps(output, ensure_ascii=False, indent=2))

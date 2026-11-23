@@ -16,11 +16,11 @@ from langgraph.types import Command
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
-from agent_sav import web
+from agent_sav import model, web
 from agent_sav.database import CHECKPOINT_TABLES, SHOP_TABLES, initialize_database
-from agent_sav.model import understand
+from agent_sav.model import confirms, understand
 from agent_sav.shop import DEFAULT_DSN, Shop
-from agent_sav.workflow import build_graph
+from agent_sav.workflow import CUSTOMER_PAUSES, build_graph
 
 PULL = "ITEM-DEMO-1001-1"  # Pull en laine côtelée, Vert mousse, S (ART-001; ART-021 in Noir)
 TSHIRT = "ITEM-DEMO-1001-2"
@@ -65,6 +65,8 @@ class Conversation:
             self.graph.invoke(Command(resume={"message": text}), self.config)
         else:
             self.graph.invoke({"messages": [{"type": "human", "content": text}]}, self.config)
+        if self.waiting_for in CUSTOMER_PAUSES:
+            return self.graph.get_state(self.config).interrupts[0].value["question"]
         return str(self.state["messages"][-1].text)
 
     def shop_decides(self, approved: bool, reason: str = "") -> None:
@@ -98,7 +100,9 @@ def test_graph_shape():
         ("__start__", "understand"),
         ("understand", "ask"), ("ask", "understand"),
         ("understand", "send_question"), ("send_question", "__end__"),
-        ("understand", "register_request"),
+        ("understand", "cancel_request"), ("cancel_request", "__end__"),
+        ("understand", "validate_request"),
+        ("validate_request", "register_request"), ("validate_request", "understand"),
         ("register_request", "shop_review"), ("register_request", "__end__"),
         ("shop_review", "__end__"),
     }
@@ -121,6 +125,22 @@ def test_rules_read_the_message(message, expected):
     assert {key: value for key, value in found.items() if value is not None} == expected
 
 
+@pytest.mark.parametrize(("message", "history", "expected"), [
+    ("Non", ["recap"], None), ("annuler", [], None), ("annuler", ["recap"], "cancel"),
+])
+def test_the_model_cannot_give_up_for_the_customer(monkeypatch, message, history, expected):
+    cancel = model.Found(**dict.fromkeys(model.Found.model_fields) | {"action": "cancel"})
+    monkeypatch.setattr(model, "understand_rules", lambda *_: cancel)
+    history = [{"role": "sav", "content": content} for content in history]
+    assert understand(message, {}, [], history)["action"] == expected
+
+
+def test_the_suggested_word_always_gives_up(monkeypatch):
+    nothing = model.Found(**dict.fromkeys(model.Found.model_fields))
+    monkeypatch.setattr(model, "understand_rules", lambda *_: nothing)
+    assert understand("Annuler.", {}, [], [{"role": "sav", "content": "recap"}])["action"] == "cancel"
+
+
 def test_rules_pick_an_article_from_the_list():
     items = [{"item_id": item_id, "order_id": "DEMO-1001", "product_id": "ART-001", "name": name,
               "color": "Écru", "size": "M"} for item_id, name in ((PULL, "Pull"), (TSHIRT, "T-shirt en coton"))]
@@ -129,6 +149,14 @@ def test_rules_pick_an_article_from_the_list():
     assert understand("le deuxième", request, items, history)["item_id"] == TSHIRT
     assert understand("2", request, items, history)["item_id"] == TSHIRT
     assert understand("le t-shirt en coton", request, items, [])["item_id"] == TSHIRT
+
+
+@pytest.mark.parametrize(("message", "expected"), [
+    ("oui", True), ("Oui !", True), ("ok merci", True), ("Oui, c’est bon", True), ("Je confirme le retour", True),
+    ("non", False), ("merci", False), ("oui mais en L", False), ("oui, enfin non", False), ("le pull", False),
+])
+def test_only_a_plain_yes_confirms(message, expected):
+    assert confirms(message) is expected
 
 
 def test_information_needs_only_the_question(graph, database):
@@ -141,21 +169,28 @@ def test_information_needs_only_the_question(graph, database):
     assert chat.waiting_for == ()
 
     shop = Shop(database)
-    assert shop.unanswered_inquiries() == [
-        {"thread_id": chat.thread_id, "customer_id": "CLI-001", "question": "Livrez-vous en Belgique ?"},
-    ]
+    [inquiry] = shop.unanswered_inquiries()
+    assert (inquiry["thread_id"], inquiry["customer_id"], inquiry["question"]) == (
+        chat.thread_id, "CLI-001", "Livrez-vous en Belgique ?")
     assert shop.answer_inquiry(chat.thread_id, "Oui.")
     assert shop.answer_inquiry(chat.thread_id, "Oui.")  # the same answer sent twice is accepted
     assert not shop.answer_inquiry(chat.thread_id, "Non.")
     assert shop.unanswered_inquiries() == []
-    assert shop.mailbox("CLI-001") == [{"sender": "shop", "body": "Réponse de la boutique\nOui."}]
+    [mail] = shop.mailbox("CLI-001")
+    assert (mail["sender"], mail["body"]) == ("shop", "Réponse de la boutique\nOui.")
 
 
 def test_return_needs_the_article_and_ends_with_the_shop_decision(graph, database):
     chat = Conversation(graph)
     question = chat.say("Je veux retourner un article")
     assert question.startswith("Quel article est concerné ?\n1. Pull en laine côtelée")
-    assert "transmise à la boutique" in chat.say("2")
+    assert chat.say("2") == (
+        "Voici votre demande :\nRetour : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\n"
+        "Répondez « oui » pour confirmer, « annuler » pour abandonner, ou dites-moi ce qu’il faut changer."
+    )
+    assert chat.waiting_for == ("validate_request",)
+    assert Shop(database).requests_for_shop() == []  # nothing is recorded before the customer agrees
+    assert "transmise à la boutique" in chat.say("oui")
     assert (chat.state["action"], chat.state["item_id"], chat.state["status"]) == ("return", TSHIRT, "awaiting_shop")
     assert chat.waiting_for == ("shop_review",)
     assert Shop(database).requests_for_shop()[0]["thread_id"] == chat.thread_id
@@ -177,7 +212,9 @@ def test_exchange_needs_a_different_variant_in_stock(graph, database):
     assert "Coloris : Vert mousse, Noir." in chat.say("en violet")
     assert quantity(database, "ART-021", "L") == 10
 
-    assert "transmise à la boutique" in chat.say("en L noir")
+    assert "Contre : Noir · L\n" in chat.say("en L noir")
+    assert quantity(database, "ART-021", "L") == 10  # not reserved yet
+    assert "transmise à la boutique" in chat.say("Oui, je confirme")
     assert (chat.state["size"], chat.state["color"], chat.state["status"]) == ("L", "Noir", "awaiting_shop")
     assert quantity(database, "ART-021", "L") == 9  # reserved
 
@@ -185,14 +222,15 @@ def test_exchange_needs_a_different_variant_in_stock(graph, database):
     assert chat.state["status"] == "rejected_by_shop"
     assert quantity(database, "ART-021", "L") == 10  # back in stock
     [mail] = Shop(database).mailbox("CLI-001")
-    assert mail == {"sender": "shop", "body": (
+    assert (mail["sender"], mail["body"]) == ("shop", (
         "Demande SAV refusée\nCommande DEMO-1001 · Échange · Pull en laine côtelée · Noir · taille L\nMotif : Article abîmé"
-    )}
+    ))
 
 
 def test_a_size_alone_keeps_the_bought_color(graph, database):
     chat = Conversation(graph)
-    chat.say(f"Je veux échanger {PULL} en M")
+    assert "Contre : Vert mousse · M\n" in chat.say(f"Je veux échanger {PULL} en M")
+    chat.say("oui")
     assert (chat.state["size"], chat.state["color"], chat.state["status"]) == ("M", "Vert mousse", "awaiting_shop")
     assert quantity(database, "ART-001", "M") == 19
 
@@ -209,7 +247,91 @@ def test_pauses_reject_answers_in_the_wrong_shape(graph):
     chat.say("2")
     with pytest.raises(ValidationError):
         graph.invoke(Command(resume=True), chat.config)
+    assert chat.waiting_for == ("validate_request",)
+    chat.say("oui")
+    with pytest.raises(ValidationError):
+        graph.invoke(Command(resume=True), chat.config)
     assert chat.waiting_for == ("shop_review",)
+
+
+def test_the_customer_corrects_the_request_before_it_is_sent(graph, database):
+    chat = Conversation(graph)
+    assert "Contre : Vert mousse · M\n" in chat.say(f"Je veux échanger {PULL} en M")
+    assert "Contre : Vert mousse · L\n" in chat.say("Non, plutôt en L")
+    assert "Contre : Noir · L\n" in chat.say("oui mais en noir")
+    assert chat.waiting_for == ("validate_request",)
+    # Another article: the size and color wanted for the first one no longer apply.
+    assert chat.say("Non, c'est le t-shirt").startswith("Quelle taille ou quel coloris")
+    assert (chat.state["item_id"], chat.state["size"], chat.state["color"]) == (TSHIRT, None, None)
+    assert "Échange : T-shirt" in chat.say("en M")
+    assert Shop(database).requests_for_shop() == []
+    assert "transmise à la boutique" in chat.say("oui")
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT item_id, size FROM shop.sav_requests").fetchall() == [(TSHIRT, "M")]
+    assert quantity(database, "ART-021", "L") == 10  # the abandoned variant was never reserved
+
+
+def test_a_bare_no_asks_what_to_change(graph):
+    chat = Conversation(graph)
+    chat.say("Je veux retourner mon pull")
+    for _ in range(2):
+        answer = chat.say("non")
+        assert answer.startswith("Que souhaitez-vous changer ?\nRetour : Pull en laine côtelée")
+    assert "Retour : T-shirt" in chat.say("le t-shirt")
+    assert "transmise à la boutique" in chat.say("oui")
+
+
+@pytest.mark.parametrize("first", [
+    "Je veux retourner mon pull",  # waits in validate_request
+    "Je veux retourner un article",  # waits in ask
+    "J'ai une question",
+])
+def test_the_customer_gives_up(graph, database, first):
+    chat = Conversation(graph)
+    chat.say(first)
+    assert "abandonnée" in chat.say("Non, laisse tomber")
+    assert (chat.state["status"], chat.state["action"], chat.waiting_for) == ("cancelled", None, ())
+    with psycopg.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM shop.sav_requests").fetchone() == (0,)
+
+
+def test_a_thread_can_start_again_after_giving_up(graph):
+    chat = Conversation(graph)
+    chat.say("Je veux retourner mon pull")
+    chat.say("annuler")
+    graph.invoke({"messages": [{"type": "human", "content": "Je veux retourner un article"}]}, chat.config)
+    assert chat.waiting_for == ("ask",)  # Studio keeps the thread: the old article is forgotten
+
+
+def test_cancelling_an_order_is_not_giving_up(graph):
+    chat = Conversation(graph)
+    chat.say("J'ai une question")
+    assert "transmise à la boutique" in chat.say("Puis-je annuler ma commande ?")
+    assert Conversation(graph).say("annuler").startswith("Bonjour")  # nothing to give up yet
+
+
+def test_a_correction_can_change_the_action(graph):
+    chat = Conversation(graph)
+    chat.say("Je veux retourner mon pull")
+    assert "transmise à la boutique" in chat.say("Non, j'ai une question : livrez-vous en Belgique ?")
+    assert (chat.state["action"], chat.state["status"]) == ("information", "question_sent")
+
+
+def test_switching_between_return_and_exchange_keeps_the_article(graph):
+    chat = Conversation(graph)
+    chat.say("Je veux retourner mon pull")
+    assert "Échange : Pull en laine côtelée" in chat.say("Non, je préfère l'échanger en L")
+    assert "Retour : Pull en laine côtelée" in chat.say("Finalement un retour")
+    assert (chat.state["size"], chat.state["color"]) == (None, None)
+
+
+def test_variant_taken_while_the_customer_confirms(graph, database):
+    chat = Conversation(graph)
+    chat.say(f"Je veux échanger {PULL} en L noir")
+    with psycopg.connect(database) as db:
+        db.execute("UPDATE shop.stock SET quantity = 0 WHERE product_id = 'ART-021'")
+    assert "vient de passer en rupture" in chat.say("oui")
+    assert chat.state["status"] == "out_of_stock"
 
 
 def test_changing_action_forgets_the_previous_details(graph):
@@ -254,7 +376,11 @@ def test_cli_journey_and_recovery_after_a_lost_response(database):
     assert opened["next"] == ["ask"]
     assert "ce dossier n’attend pas cette étape" in cli(database, "decide", thread, "yes", code=1).casefold()
 
-    asked = cli(database, "say", thread, "le premier")
+    recap = cli(database, "say", thread, "le premier")
+    assert recap["next"] == ["validate_request"]
+    assert "Retour : Pull en laine côtelée" in recap["question"]
+
+    asked = cli(database, "say", thread, "oui")
     assert (asked["item_id"], asked["status"], asked["next"]) == (PULL, "awaiting_shop", ["shop_review"])
     assert "motif" in cli(database, "decide", thread, "no", code=1)
     assert "pas d'exécution à reprendre" in cli(database, "resume", thread, code=1)
@@ -301,11 +427,17 @@ def get_page(boutique, route):
 def test_web_chat_and_shop_decision(boutique, database):
     thread = f"CLI-001:{uuid4()}"
     first = {"thread_id": thread, "message_id": str(uuid4()), "message": "Je souhaite retourner mon pull"}
-    sent = send(boutique, "/api/support", first)
+    recap = send(boutique, "/api/support", first)
+    assert recap["awaiting_message"] and "Retour : Pull en laine côtelée" in recap["question"]
+    assert send(boutique, "/api/support", first) == recap  # a retried message is not handled twice
+    assert "Aucune demande en attente" in get_page(boutique, "/shop/support")
+
+    confirmation = {"thread_id": thread, "message_id": str(uuid4()), "message": "oui"}
+    sent = send(boutique, "/api/support", confirmation)
     assert sent == {"status": "awaiting_shop", "messages": [{
         "role": "assistant", "content": "Votre demande a été transmise à la boutique. Vous recevrez la suite par mail.",
     }]}
-    assert send(boutique, "/api/support", first) == sent  # a retried message is not handled twice
+    assert send(boutique, "/api/support", confirmation) == sent
 
     page = get_page(boutique, "/shop/support")
     assert "Retour · DEMO-1001" in page and f'action="/shop/support/{thread}"' in page

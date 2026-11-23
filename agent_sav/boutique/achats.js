@@ -1,4 +1,5 @@
 import {closeChat, openChat} from "/chat.js";
+import {garment} from "/garments.js";
 
 const select = document.querySelector("#customer");
 const orders = document.querySelector("#orders");
@@ -34,6 +35,7 @@ function orderCard(order) {
   state.textContent = statusLabels[order.status];
   for (const item of order.items) {
     const row = itemTemplate.content.cloneNode(true);
+    row.querySelector(".order-visual").innerHTML = garment(item.name, item.color);
     row.querySelector(".product-name").textContent = item.name;
     row.querySelector(".variant").textContent = item.size
       ? item.color + " · Taille " + item.size
@@ -81,7 +83,10 @@ async function loadCustomers() {
     }
     select.disabled = false;
     helpButton.disabled = false;
+    const wanted = new URLSearchParams(location.search).get("customer");
+    if (customers.some(({id}) => id === wanted)) select.value = wanted;
     await loadOrders();
+    if (location.hash === "#chat") helpButton.click();
   } catch {
     status.textContent = "Impossible de charger les comptes de démonstration.";
     retry.hidden = false;

@@ -6,59 +6,206 @@
   <title>Sommaire de la démo · Agent SAV</title>
   <link rel="stylesheet" href="theme.css">
   <style>
-    .demo-links { border-top: 1px solid var(--line); }
-    .demo-links a {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: .3rem 1rem;
-      padding: 1.15rem .5rem;
-      border-bottom: 1px solid var(--line);
+    /* Le parcours SAV en trois étapes illustrées, puis les outils techniques. */
+    .shell { width: min(68rem, calc(100% - 3rem)); }
+    .intro p { max-width: 40rem; font-size: 1.0625rem; }
+    .section-title { margin-bottom: 1.1rem; font-size: 1rem; font-weight: 550; letter-spacing: -.01em; color: var(--muted); }
+    .steps, .tools ul { margin: 0; padding: 0; list-style: none; }
+
+    .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2.25rem; }
+    .steps li { position: relative; display: grid; }
+    .steps li + li::before {
+      content: "→" / "";
+      position: absolute;
+      top: 5.75rem;
+      left: -2.25rem;
+      width: 2.25rem;
+      text-align: center;
+      line-height: 1;
+      color: var(--control-line);
+    }
+
+    .card {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: .75rem;
+      background: var(--surface);
       color: var(--ink);
       text-decoration: none;
+      transition: border-color .18s, background-color .18s, transform .18s;
     }
-    .demo-links a:hover { background: var(--surface); }
-    .demo-links a:hover h2 { color: var(--accent); }
-    .demo-links p { color: var(--muted); font-size: .9375rem; }
-    .open-icon { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--accent); }
+    .card:hover { border-color: var(--accent-border); background: #15161b; color: var(--ink); transform: translateY(-3px); }
+    .card-body { display: flex; flex: 1; flex-direction: column; gap: .5rem; padding: 1.2rem 1.25rem 1.1rem; }
+    .card h3 { font-size: 1.125rem; font-weight: 620; letter-spacing: -.02em; }
+    .card p { color: var(--muted); font-size: .9375rem; }
+    .address {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem;
+      margin-top: auto;
+      padding-top: .7rem;
+      color: var(--muted);
+      font: .8125rem/1.4 ui-monospace, Consolas, monospace;
+    }
+    .open-icon { color: var(--accent); font: 1.05rem/1 system-ui, sans-serif; transition: transform .18s; }
+    .card:hover .open-icon { transform: translate(2px, -2px); }
+
+    /* Aperçus décoratifs de chaque écran. */
+    .preview {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      height: 12.5rem;
+      padding: 1.1rem;
+      border-bottom: 1px solid var(--line);
+      background: radial-gradient(circle at 50% 0, #1c2438, #101116 75%);
+      font-size: .8125rem;
+      line-height: 1.45;
+    }
+    .preview-photo {
+      justify-content: flex-end;
+      align-items: flex-end;
+      gap: .4rem;
+      background: #2a2f1c url("../agent_sav/boutique/pull.webp") 50% 22% / cover;
+    }
+    .preview-helpdesk { background: linear-gradient(90deg, #2f1740 2.5rem, #f5f2f7 2.5rem); padding-left: 3.5rem; }
+    .preview-helpdesk .window { border-color: #e6e1ea; background: #fff; color: #6d6277; box-shadow: none; }
+    .preview-helpdesk .window b { color: #251a2e; }
+    .preview-helpdesk .buttons span { border-color: #cfc6d6; color: #251a2e; }
+    .preview-helpdesk .buttons .primary { border-color: #2f1740; background: #2f1740; color: #fff; }
+    .bubble { padding: .45rem .75rem; border-radius: .9rem; box-shadow: 0 .25rem 1rem #0006; }
+    .bubble-customer { border-bottom-right-radius: .25rem; background: var(--accent); color: #101a30; }
+    .bubble-agent { align-self: flex-start; border-bottom-left-radius: .25rem; background: var(--surface-raised); }
+    .window {
+      display: grid;
+      gap: .2rem;
+      padding: .9rem 1rem;
+      border: 1px solid #33343c;
+      border-radius: .5rem;
+      background: var(--surface);
+      box-shadow: 0 .5rem 1.5rem #0006;
+      color: var(--muted);
+      text-wrap: balance;
+    }
+    .window b { color: var(--ink); font-size: .875rem; font-weight: 600; }
+    .buttons { display: flex; gap: .45rem; margin-top: .5rem; }
+    .buttons span { padding: .2rem .65rem; border: 1px solid var(--control-line); border-radius: .3rem; color: var(--ink); font-size: .75rem; }
+    .buttons .primary { border-color: var(--accent-border); background: var(--accent-surface); color: var(--accent); }
+    .accepted { display: flex; align-items: center; gap: .45rem; color: #a8cbad; }
+    .accepted::before { content: ""; width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }
+
+    .tools { margin-top: clamp(2.5rem, 5vw, 3.5rem); }
+    .tools ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
+    .tools li { display: grid; }
+    .chips { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: .35rem; color: var(--control-line); }
+    .chips code {
+      padding: .12rem .5rem;
+      border: 1px solid var(--line);
+      border-radius: .3rem;
+      background: var(--surface-raised);
+      color: var(--muted);
+      font: .75rem/1.5 ui-monospace, Consolas, monospace;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card, .open-icon { transition: none; }
+      .card:hover, .card:hover .open-icon { transform: none; }
+    }
   </style>
 </head>
 <body>
   <header class="site-header">
     <div class="shell header-inner">
       <a class="wordmark" href="sommaire.html">Agent SAV<span>.</span></a>
-      <nav class="site-nav" aria-label="Navigation">
-        <a href="sommaire.html" aria-current="page">Sommaire</a>
-      </nav>
     </div>
   </header>
   <main class="shell">
-    <h1 class="page-heading">Sommaire de la démo</h1>
-    <nav class="demo-links" aria-label="Accès à la démonstration">
-      <a href="http://127.0.0.1:8000/orders" target="_blank" rel="noopener">
-        <h2>Boutique Maison Orme</h2>
-        <p>Choisir un compte fictif, parcourir ses achats et contacter le service client.</p>
-        <span class="open-icon" aria-hidden="true">↗</span>
-      </a>
-      <a href="http://127.0.0.1:8000/support/mailbox" target="_blank" rel="noopener">
-        <h2>Boîte mail de démonstration</h2>
-        <p>Choisir un client fictif et consulter ses messages SAV.</p>
-        <span class="open-icon" aria-hidden="true">↗</span>
-      </a>
-      <a href="http://127.0.0.1:8000/shop/support" target="_blank" rel="noopener">
-        <h2>Back-office boutique</h2>
-        <p>Consulter les demandes SAV et les valider ou les refuser.</p>
-        <span class="open-icon" aria-hidden="true">↗</span>
-      </a>
-      <a href="http://127.0.0.1:8081/" target="_blank" rel="noopener">
-        <h2>Base SQL</h2>
-        <p>Consulter les dossiers SAV et le stock par article et par taille dans Pgweb.</p>
-        <span class="open-icon" aria-hidden="true">↗</span>
-      </a>
-      <a href="https://smith.langchain.com/studio/?baseUrl=http%3A%2F%2F127.0.0.1%3A2024" target="_blank" rel="noopener">
-        <h2>LangSmith Studio local</h2>
-        <p>Visualiser le graphe SAV et tester ses étapes jusqu’à la confirmation.</p>
-        <span class="open-icon" aria-hidden="true">↗</span>
-      </a>
+    <div class="page-heading intro">
+      <h1>Sommaire de la démo</h1>
+      <p>Suivez une demande d’échange, de retour ou de renseignement, du premier message du client à la réponse de la boutique.</p>
+    </div>
+
+    <nav aria-label="Accès à la démonstration">
+      <section aria-labelledby="steps-title">
+        <h2 class="section-title" id="steps-title">Le parcours d’une demande</h2>
+        <ol class="steps">
+          <li>
+            <a class="card" href="http://127.0.0.1:8000/" target="_blank" rel="noopener">
+              <div class="preview preview-photo" aria-hidden="true">
+                <span class="bubble bubble-customer">Je voudrais l’échanger.</span>
+                <span class="bubble bubble-agent">Quelle taille souhaitez-vous ?</span>
+              </div>
+              <div class="card-body">
+                <h3>Boutique Maison Orme</h3>
+                <p>Parcourir la collection et les achats d’un compte fictif, puis contacter le service client.</p>
+                <span class="address">127.0.0.1:8000 <span class="open-icon" aria-hidden="true">↗</span></span>
+              </div>
+            </a>
+          </li>
+          <li>
+            <a class="card" href="http://127.0.0.1:8000/shop/support" target="_blank" rel="noopener">
+              <div class="preview preview-helpdesk" aria-hidden="true">
+                <div class="window">
+                  <b>Échange · DEMO-1001</b>
+                  <span>Camille Moreau · Pull en laine côtelée</span>
+                  <div class="buttons"><span class="primary">Valider</span><span>Refuser</span></div>
+                </div>
+              </div>
+              <div class="card-body">
+                <h3>Deskalo, l’outil du SAV</h3>
+                <p>Traiter les tickets dans un logiciel SAV fictif : valider, refuser ou répondre.</p>
+                <span class="address">127.0.0.1:8000 <span class="open-icon" aria-hidden="true">↗</span></span>
+              </div>
+            </a>
+          </li>
+          <li>
+            <a class="card" href="http://127.0.0.1:8000/support/mailbox" target="_blank" rel="noopener">
+              <div class="preview" aria-hidden="true">
+                <div class="window">
+                  <b>Maison Orme</b>
+                  <span class="accepted">Demande SAV acceptée</span>
+                  <span>Commande DEMO-1001 · Échange · Pull en laine côtelée · Vert mousse · taille M</span>
+                </div>
+              </div>
+              <div class="card-body">
+                <h3>Boîte mail de démonstration</h3>
+                <p>Choisir un client fictif et consulter ses messages SAV.</p>
+                <span class="address">127.0.0.1:8000 <span class="open-icon" aria-hidden="true">↗</span></span>
+              </div>
+            </a>
+          </li>
+        </ol>
+      </section>
+
+      <section class="tools" aria-labelledby="tools-title">
+        <h2 class="section-title" id="tools-title">Les outils techniques</h2>
+        <ul>
+          <li>
+            <a class="card" href="http://127.0.0.1:8081/" target="_blank" rel="noopener">
+              <div class="card-body">
+                <h3>Base SQL</h3>
+                <p>Consulter les dossiers SAV et le stock par article et par taille dans Pgweb.</p>
+                <div class="chips" aria-hidden="true"><code>sav_requests</code><code>sav_messages</code><code>stock</code></div>
+                <span class="address">127.0.0.1:8081 <span class="open-icon" aria-hidden="true">↗</span></span>
+              </div>
+            </a>
+          </li>
+          <li>
+            <a class="card" href="https://smith.langchain.com/studio/?baseUrl=http%3A%2F%2F127.0.0.1%3A2024" target="_blank" rel="noopener">
+              <div class="card-body">
+                <h3>LangSmith Studio local</h3>
+                <p>Visualiser le graphe SAV et tester ses étapes jusqu’à la décision de la boutique.</p>
+                <div class="chips" aria-hidden="true"><code>understand</code>→<code>validate_request</code>→<code>register_request</code>→<code>shop_review</code></div>
+                <span class="address">127.0.0.1:2024 <span class="open-icon" aria-hidden="true">↗</span></span>
+              </div>
+            </a>
+          </li>
+        </ul>
+      </section>
     </nav>
   </main>
 </body>

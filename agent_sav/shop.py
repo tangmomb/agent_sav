@@ -83,6 +83,16 @@ class Shop:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("SELECT id, first_name, name FROM shop.customers ORDER BY id").fetchall()
 
+    def products(self) -> list[dict]:
+        """The catalog: one row per product color, with its stock by size ("" for unsized products)."""
+        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
+            return conn.execute("""
+                SELECT p.id, p.name, p.color, p.price_cents,
+                       coalesce(jsonb_object_agg(s.size, s.quantity) FILTER (WHERE s.size IS NOT NULL), '{}') AS stock
+                FROM shop.products p LEFT JOIN shop.stock s ON s.product_id = p.id
+                GROUP BY p.id ORDER BY p.id
+            """).fetchall()
+
     def orders(self, customer_id: str) -> list[dict] | None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             if conn.execute("SELECT 1 FROM shop.customers WHERE id = %s", (customer_id,)).fetchone() is None:
@@ -110,7 +120,7 @@ class Shop:
         """Articles of the customer's delivered orders: the ones a return or exchange can be about."""
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("""
-                SELECT i.item_id, i.order_id, i.product_id, p.name, p.color, i.size
+                SELECT i.item_id, i.order_id, o.ordered_on::text, i.product_id, p.name, p.color, i.size
                 FROM shop.orders o JOIN shop.order_items i ON i.order_id = o.id
                 JOIN shop.products p ON p.id = i.product_id
                 WHERE o.customer_id = %s AND o.status = 'delivered'
@@ -206,9 +216,10 @@ class Shop:
     def requests_for_shop(self) -> list[dict]:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("""
-                SELECT r.thread_id, r.customer_id, i.order_id, r.action, r.size, r.color, p.name
+                SELECT r.thread_id, r.customer_id, i.order_id, r.action, r.size, r.color, p.name, r.created_at,
+                       i.size AS bought_size, p.color AS bought_color, c.first_name, c.name AS last_name
                 FROM shop.sav_requests r JOIN shop.order_items i USING (item_id)
-                JOIN shop.products p ON p.id = i.product_id
+                JOIN shop.products p ON p.id = i.product_id JOIN shop.customers c ON c.id = r.customer_id
                 WHERE r.status = 'awaiting_shop' AND strpos(r.thread_id, ':') > 0 ORDER BY r.created_at
             """).fetchall()
 
@@ -229,8 +240,9 @@ class Shop:
     def unanswered_inquiries(self) -> list[dict]:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("""
-                SELECT r.thread_id, r.customer_id, m.body AS question
+                SELECT r.thread_id, r.customer_id, m.body AS question, r.created_at, c.first_name, c.name AS last_name
                 FROM shop.sav_requests r JOIN shop.sav_messages m ON m.thread_id = r.thread_id AND m.sender = 'customer'
+                JOIN shop.customers c ON c.id = r.customer_id
                 WHERE r.action = 'information' AND r.status = 'awaiting_shop' ORDER BY r.created_at
             """).fetchall()
 
@@ -264,7 +276,7 @@ class Shop:
         """Emails sent to the customer, newest first."""
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("""
-                SELECT m.sender, m.body
+                SELECT m.thread_id, m.sender, m.body, m.created_at
                 FROM shop.sav_messages m JOIN shop.sav_requests r USING (thread_id)
                 WHERE r.customer_id = %s AND m.sender <> 'customer'
                     AND (r.action = 'information' OR strpos(r.thread_id, ':') > 0)

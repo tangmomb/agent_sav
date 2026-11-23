@@ -3,42 +3,67 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Retrouvez vos achats et contactez le service client de Maison Orme.">
-  <title>Mes achats · Maison Orme</title>
+  <meta name="description" content="Découvrez la collection, retrouvez vos achats et contactez le service client de Maison Orme.">
+  <title>Collection · Maison Orme</title>
+  <script>document.documentElement.dataset.view = location.pathname === "/orders" ? "orders" : "collection";</script>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:wght@300..600&display=swap">
   <link rel="stylesheet" href="/theme.css">
   <link rel="stylesheet" href="/shop.css">
+  <script type="module" src="/catalogue.js"></script>
   <script type="module" src="/orders.js"></script>
 </head>
 <body>
   <header class="site-header">
     <div class="shell header-inner">
-      <a class="wordmark" href="/orders">Maison Orme<span>.</span></a>
+      <a class="wordmark" href="/" data-view="collection">Maison Orme</a>
       <nav class="site-nav" aria-label="Navigation">
-        <a href="/orders" aria-current="page">Mes achats</a>
+        <a href="/" data-view="collection">Collection</a>
+        <a href="/orders" data-view="orders">Mes achats</a>
         <a id="support-mailbox" href="/support/mailbox/CLI-001">Boîte mail</a>
-        <a href="/shop/support">Espace boutique</a>
       </nav>
-    </div>
-  </header>
-
-  <main class="shell">
-    <div class="page-heading purchase-heading">
-      <div>
-        <h1>Mes achats</h1>
-        <p id="orders-status" role="status">Chargement de vos commandes…</p>
-      </div>
       <div class="account">
         <label for="customer">Compte de démo</label>
         <select class="control" id="customer" disabled><option>Chargement…</option></select>
       </div>
     </div>
-    <button class="contact" id="retry-orders" type="button" hidden>Réessayer</button>
-    <ul id="orders" class="orders" aria-label="Historique des commandes"></ul>
+  </header>
+
+  <main class="storefront">
+    <div id="collection-view">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-text">
+          <h1 id="hero-title">Laine côtelée, vert mousse</h1>
+          <p>Manches raglan, col rond et grosses côtes. Le pull se décline aussi en noir.</p>
+          <a class="button" href="#collection">Voir la collection</a>
+        </div>
+        <img class="hero-photo" src="/pull.webp" width="1350" height="900" alt="Pull en laine côtelée vert mousse, posé à plat sur un fond beige">
+      </section>
+
+      <section class="shell collection" id="collection" aria-labelledby="collection-title">
+        <div class="collection-heading">
+          <h2 id="collection-title">La collection</h2>
+          <p id="collection-status" role="status">Chargement de la collection…</p>
+        </div>
+        <div id="filters" class="filters" role="group" aria-label="Filtrer par catégorie"></div>
+        <button class="button" id="retry-collection" type="button" hidden>Réessayer</button>
+        <ul id="products" class="products"></ul>
+      </section>
+    </div>
+
+    <div class="shell" id="orders-view">
+      <div class="page-heading">
+        <h1>Mes achats</h1>
+        <p id="orders-status" role="status">Chargement de vos commandes…</p>
+      </div>
+      <button class="button" id="retry-orders" type="button" hidden>Réessayer</button>
+      <ul id="orders" class="orders" aria-label="Historique des commandes"></ul>
+    </div>
   </main>
 
   <footer class="site-footer">
     <div class="shell footer-inner">
-      <span>Boutique fictive</span>
+      <span class="wordmark">Maison Orme</span>
+      <span>Boutique fictive de démonstration</span>
     </div>
   </footer>
 
@@ -61,7 +86,7 @@
       <div id="chat-log" class="chat-log" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <form id="chat-form" class="chat-form">
         <input class="control" id="chat-input" aria-label="Votre message" placeholder="Écrivez votre message…" maxlength="1000" autocomplete="off" required>
-        <button id="send-chat" class="contact send-button" type="submit" aria-label="Envoyer">
+        <button id="send-chat" class="send-button" type="submit" aria-label="Envoyer">
           <span aria-hidden="true">↑</span>
         </button>
       </form>
@@ -81,11 +106,26 @@
   </template>
   <template id="order-item">
     <li class="order-item">
-      <div>
+      <span class="order-visual"></span>
+      <div class="order-text">
         <strong class="product-name"></strong>
         <p class="variant"></p>
       </div>
       <span class="price"></span>
+    </li>
+  </template>
+  <template id="product-card">
+    <li class="product">
+      <div class="product-visual"></div>
+      <div class="product-title">
+        <h3 class="product-name"></h3>
+        <span class="price"></span>
+      </div>
+      <p class="product-color" aria-live="polite"></p>
+      <div class="product-options">
+        <div class="swatches" role="group" aria-label="Coloris"></div>
+        <ul class="product-sizes" aria-label="Tailles"></ul>
+      </div>
     </li>
   </template>
 </body>
