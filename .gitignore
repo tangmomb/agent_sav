@@ -3,3 +3,5 @@
 __pycache__/
 .pytest_cache/
 .langgraph_api/
+evals/results/*.json
+deploy/.env

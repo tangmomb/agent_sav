@@ -2,96 +2,95 @@ import argparse
 import json
 import os
 import sys
-from uuid import uuid4
 
 import psycopg
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage
-from langgraph.types import Command
 
-from .database import initialize_database, open_checkpointer
+from .alerts import alert_operator
+from .database import initialize_database
 from .demo_data import DEMO_CUSTOMER
-from .shop import DEFAULT_DSN, Shop
-from .workflow import CUSTOMER_PAUSES, LostResponse, build_graph
+from .service import Support
+from .shop import DEFAULT_DSN
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Agent SAV e-commerce (sans MISTRAL_API_KEY, des règles simples lisent les messages)")
+    parser = argparse.ArgumentParser(description="Agent SAV e-commerce")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("init", help="Initialise la base de démonstration")
-    commands.add_parser("web", help="Lance la boutique de démonstration").add_argument("--port", type=int, default=8000)
-    start = commands.add_parser("open", help="Ouvre un dossier avec un premier message")
+    web = commands.add_parser("web", help="Lance la boutique de démonstration")
+    web.add_argument("--port", type=int, default=8000)
+    web.add_argument("--host", default="127.0.0.1")
+    web.add_argument("--public", action="store_true", help="Démo publique : une boutique isolée par visiteur")
+    commands.add_parser("mcp", help="Lance le serveur MCP").add_argument("--port", type=int, default=8765)
+    commands.add_parser("mcp-token", help="Crée un jeton MCP pour un client").add_argument("--customer", default=DEMO_CUSTOMER)
+    start = commands.add_parser("open", help="Ouvre un chat avec un premier message")
     start.add_argument("message")
     start.add_argument("--customer", default=DEMO_CUSTOMER)
-    say = commands.add_parser("say", help="Répond à la question ou au récapitulatif du SAV")
-    say.add_argument("thread_id")
+    say = commands.add_parser("say", help="Continue un chat")
+    say.add_argument("chat_id")
     say.add_argument("message")
-    decide = commands.add_parser("decide", help="Enregistre la décision de la boutique")
-    decide.add_argument("thread_id")
-    decide.add_argument("decision", choices=["yes", "no"])
-    decide.add_argument("--reason", default="")
-    decide.add_argument("--simulate-timeout", action="store_true", help="Perd la réponse après l'enregistrement")
-    for name, help_text in (("resume", "Rejoue une exécution interrompue"), ("status", "Affiche l'état sauvegardé")):
-        commands.add_parser(name, help=help_text).add_argument("thread_id")
+    decide = commands.add_parser("decide", help="Enregistre ce que la boutique fait d’un dossier")
+    decide.add_argument("case_id")
+    decide.add_argument("action", choices=["approve", "reject", "answer", "received"])
+    decide.add_argument("--text", default="", help="Motif du refus, ou réponse à la question")
+    commands.add_parser("case", help="Affiche un dossier").add_argument("case_id")
+    commands.add_parser("tick", help="Applique les échéances passées et reprend les dossiers interrompus")
 
     args = parser.parse_args()
     load_dotenv()
     dsn = os.getenv("DATABASE_URL", DEFAULT_DSN)
-    if args.command == "web":
-        from .web import serve
-
-        serve(dsn, args.port)
-        return 0
-    if args.command == "init":
-        initialize_database(dsn)
-        print("Base SAV initialisée.")
-        return 0
-
-    shop = Shop(dsn)
-    thread_id = getattr(args, "thread_id", None)
+    support = Support(dsn)
     try:
-        if args.command == "open":
-            thread_id = f"{args.customer}:{uuid4()}"
-        if args.command == "decide" and args.decision == "no" and not args.reason.strip():
-            raise ValueError("Indiquez un motif avec --reason.")
+        if args.command in ("web", "open", "say") and not os.getenv("MISTRAL_API_KEY"):
+            raise ValueError("MISTRAL_API_KEY est absente : l’agent a besoin du modèle.")
+        if args.command == "web":
+            from .sandboxes import Sandboxes
+            from .web import serve
 
-        config = {"configurable": {"thread_id": thread_id}}
-        with open_checkpointer(dsn) as checkpointer, psycopg.connect(dsn) as lock:
-            lock.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (thread_id,))
-            graph = build_graph(checkpointer, shop, simulate_timeout=getattr(args, "simulate_timeout", False))
-            snapshot = graph.get_state(config)
-            if args.command != "open" and not snapshot.values:
-                raise ValueError("Dossier SAV introuvable.")
-            expected = {"say": CUSTOMER_PAUSES, "decide": (("shop_review",),)}.get(args.command)
-            if expected and snapshot.next not in expected:
-                raise ValueError(f"Ce dossier n’attend pas cette étape (étape en cours : {', '.join(snapshot.next) or 'aucune'}).")
-            if args.command == "resume" and not any(task.error for task in snapshot.tasks):
-                raise ValueError("Ce dossier n'a pas d'exécution à reprendre.")
+            if args.public:
+                initialize_database(dsn)
+                serve(dsn, args.port, support, host=args.host, sandboxes=Sandboxes(dsn))
+            else:
+                serve(dsn, args.port, support, host=args.host)
+            return 0
+        if args.command == "mcp":
+            import uvicorn
 
-            entry = {
-                "open": lambda: {"messages": [{"type": "human", "content": args.message}]},
-                "say": lambda: Command(resume={"message": args.message}),
-                "decide": lambda: Command(resume={"approved": args.decision == "yes", "reason": args.reason.strip()}),
-                "resume": lambda: None,
-            }.get(args.command)
-            if entry:
-                graph.invoke(entry(), config, durability="sync")
-            snapshot = graph.get_state(config)
+            from .mcp_server import build_app
 
-        output = {key: value for key, value in snapshot.values.items() if key != "messages"}
-        output = {"thread_id": thread_id, **output, "next": list(snapshot.next), "messages": [
-            {"role": "client" if isinstance(m, HumanMessage) else "sav", "content": str(m.text)}
-            for m in snapshot.values["messages"]
-        ]}
-        if snapshot.next in CUSTOMER_PAUSES:
-            output["question"] = snapshot.interrupts[0].value["question"]
-        if output.get("status") == "completed":
-            output["reference"] = shop.reference(thread_id)
-        print(json.dumps(output, ensure_ascii=False, indent=2))
+            initialize_database(dsn)
+            uvicorn.run(build_app(support), host="127.0.0.1", port=args.port)
+            return 0
+        if args.command == "mcp-token":
+            token = support.shop.create_token(args.customer)
+            if token is None:
+                raise ValueError("Client introuvable.")
+            print(token)
+            return 0
+        if args.command == "init":
+            initialize_database(dsn)
+            print("Base SAV initialisée.")
+            return 0
+
+        if args.command in ("open", "say"):
+            chat_id = support.shop.open_chat(args.customer) if args.command == "open" else args.chat_id
+            if chat_id is None:
+                raise ValueError("Client introuvable.")
+            output = {"chat_id": chat_id, **support.chat(chat_id, args.message)}
+        elif args.command == "decide":
+            field = {"reject": "reason", "answer": "answer"}.get(args.action)
+            if field and not args.text.strip():
+                raise ValueError("Indiquez un texte avec --text.")
+            output = support.act(args.case_id, args.action, {field: args.text.strip()} if field else {})
+        elif args.command == "tick":
+            support.tick()
+            output = {"reste_à_traiter": support.cases.to_run(), "alerte_envoyée": alert_operator(support.cases)}
+        else:
+            output = support.cases.get(args.case_id)
+            if output is None:
+                raise ValueError("Dossier introuvable.")
+        print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
         return 0
-    except LostResponse as error:
-        print(f"{error} Relance avec : resume {thread_id}", file=sys.stderr)
-        return 2
     except (ValueError, psycopg.Error) as error:
         print(error, file=sys.stderr)
         return 1

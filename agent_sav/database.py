@@ -5,9 +5,11 @@ import psycopg
 from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
 
+from .cases import Cases
 from .shop import Shop
 
-SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock", "sav_requests", "sav_messages")
+SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock", "chats", "mcp_tokens", "cases", "case_commands",
+               "case_messages", "refunds")
 CHECKPOINT_TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes")
 
 
@@ -27,5 +29,6 @@ def initialize_database(dsn: str) -> None:
             conn.execute("CREATE SCHEMA IF NOT EXISTS langgraph")
 
         Shop(dsn).setup()
+        Cases(dsn).setup()
         with open_checkpointer(dsn) as checkpointer:
             checkpointer.setup()

@@ -3,8 +3,10 @@
 from datetime import datetime
 from html import escape
 
+from .cases import KINDS
+from .policy import euros
+
 MONTHS = ("janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc.")
-ACTIONS = {"exchange": "Échange", "return": "Retour", "information": "Renseignement"}
 SENDERS = {"sav": "Agent SAV", "shop": "Maison Orme"}
 
 
@@ -46,101 +48,176 @@ def waiting_time(since: datetime) -> str:
 
 
 def ticket(entry: dict) -> dict:
-    """What every ticket shows, whether it is a return, an exchange or a question."""
-    question = entry["action"] == "information"
+    """What every ticket shows, whatever its kind."""
+    question = entry["kind"] == "question"
     reference = escape(entry["customer_id"] if question else entry["order_id"])
     return {
-        "id": entry["thread_id"][-36:].split("-")[0].upper(),
+        "id": entry["id"],
         "customer": escape(f'{entry["first_name"]} {entry["last_name"]}'),
         "initials": escape(entry["first_name"][0] + entry["last_name"][0]),
-        "subject": f"{ACTIONS[entry['action']]} · {reference}",
+        "subject": f"{KINDS[entry['kind']]} · {reference}",
         "reference": reference,
-        "excerpt": escape(" ".join(entry["question"].split())) if question else escape(entry["name"]),
-        "waiting": waiting_time(entry["created_at"]),
+        "excerpt": escape(" ".join((entry["details"] if question else entry["name"] or entry["order_id"]).split())),
+        "waiting": waiting_time(entry["updated_at"]),
+        "status": "Colis attendu" if entry["status"] == "awaiting_parcel" else "À traiter",
     }
 
 
 def ticket_row(entry: dict) -> str:
     shown = ticket(entry)
-    return f"""<li data-action="{entry["action"]}"><a class="row" href="#{shown["id"]}">
+    return f"""<li data-action="{entry["kind"]}"><a class="row" href="#{shown["id"]}">
         <span class="avatar" aria-hidden="true">{shown["initials"]}</span>
         <span class="row-text"><strong>{shown["customer"]}</strong><span>{shown["excerpt"]}</span><small>{shown["reference"]}</small></span>
-        <span class="row-side"><time>{shown["waiting"]}</time><span class="tag {entry["action"]}">{ACTIONS[entry["action"]]}</span></span>
+        <span class="row-side"><time>{shown["waiting"]}</time><span class="tag {entry["kind"]}">{KINDS[entry["kind"]]}</span></span>
         </a></li>"""
 
 
-def request_body(request: dict) -> str:
-    thread_id = request["thread_id"]
-    fields = [("Article", escape(request["name"])),
-              ("Variante achetée", variant(request["bought_color"], request["bought_size"]))]
-    if request["action"] == "exchange":
-        fields.append(("Variante souhaitée", f'<strong>{variant(request["color"], request["size"])}</strong>'))
+RULES = {
+    "in_time": "Dans les délais", "late": "Hors délai, à l’appréciation de la boutique",
+    "fault": "Article abîmé ou erreur de préparation", "high_value": "Montant à valider",
+    "many_requests": "Plusieurs demandes récentes", "lost_parcel": "Colis perdu", "goodwill": "Geste commercial",
+}
+REASONS = {
+    "wrong_size": "Taille ou coupe", "changed_mind": "Ne convient pas", "damaged": "Abîmé ou défectueux",
+    "wrong_item": "Mauvais article reçu", "lost_parcel": "Colis jamais reçu", "goodwill": "Geste commercial demandé",
+}
+
+
+def action_form(case_id: str, action: str, label: str) -> str:
+    return f"""<form method="post" action="/shop/support/{case_id}">
+              <button class="button primary" name="action" value="{action}">{label}</button>
+            </form>"""
+
+
+def welcome(notice: str = "") -> str:
+    banner = f'<p class="notice" role="status">{escape(notice)}</p>' if notice else ""
+    return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Agent SAV · Démo</title><link rel="stylesheet" href="/theme.css">
+        <style>main {{ width: min(100% - 2rem, 40rem); margin: auto; padding-block: 3rem; display: grid; align-content: center; gap: 1.25rem; }} ul {{ margin: 0; padding-left: 1.2rem; }}
+        p, li {{ color: var(--muted); }} .notice {{ color: var(--ink); }}
+        button {{ justify-self: start; min-height: 2.75rem; padding: .5rem 1.25rem; border: 1px solid var(--accent-border);
+        border-radius: var(--radius); background: var(--accent-surface); color: var(--accent); cursor: pointer; }}</style></head>
+        <body><main>
+          <h1>Agent SAV</h1>
+          {banner}
+          <p>Vous jouez les deux rôles : le client qui écrit au service client, puis la boutique qui décide.</p>
+          <ul>
+            <li>Une boutique rien que pour vous, avec des clients et des commandes fictifs.</li>
+            <li>Elle est supprimée après 24 heures sans visite.</li>
+            <li>N’écrivez pas d’informations personnelles : vos messages sont traités par un modèle de langage.</li>
+          </ul>
+          <form method="post" action="/demo"><button>Ouvrir ma boutique</button></form>
+          <p>Un cookie garde votre boutique. Il ne sert à rien d’autre.</p>
+        </main></body></html>"""
+
+
+STEPS = {
+    "customer": "Client", "agent": "Agent", "recap": "Récapitulatif", "tool": "Outil",
+    "taken_back": "Réponse retenue", "case_opened": "Dossier ouvert", "case_command": "Action", "case_mail": "Mail",
+}
+COMMANDS = {
+    "auto": "accepté par les règles", "shop": "soumis à la boutique", "approve": "validé par la boutique",
+    "reject": "refusé par la boutique", "answer": "réponse de la boutique", "received": "colis reçu", "remind": "rappel",
+    "expire": "délai dépassé", "cancel": "annulé par le client",
+}
+
+
+def timeline(steps: list[dict]) -> str:
+    """Everything that led to a case: what was said, the tools called, the rules, the mails."""
+    rows = ""
+    for step in steps:
+        title = STEPS[step["kind"]]
+        if step["kind"] == "tool":
+            title = f"<code>{escape(step['title'])}</code>"
+        elif step["kind"] == "taken_back":
+            title += f" : {escape(step['title'])}"
+        args = ", ".join(f"{name} = {value}" for name, value in step.get("args", {}).items() if value not in (None, ""))
+        text = COMMANDS.get(step["text"], step["text"])
+        when = f"<time>{long_date(step['at'])}</time>" if "at" in step else ""
+        rows += f"""<li class="{step["kind"]}"><p><strong>{title}</strong>{when}</p>
+            {f'<p class="args">{escape(args)}</p>' if args else ""}<p class="text">{lines(text)}</p></li>"""
+    return f"""<details class="timeline"><summary>Chronologie de l’agent <span>{len(steps)} étapes</span></summary><ol>{rows}</ol></details>"""
+
+
+def request_body(case: dict) -> str:
+    fields = []
+    if case["item_id"]:
+        fields += [("Article", escape(case["name"])),
+                   ("Variante achetée", variant(case["bought_color"], case["bought_size"]))]
+    if case["kind"] == "exchange":
+        fields.append(("Variante souhaitée", f'<strong>{variant(case["color"], case["size"])}</strong>'))
+    if case["amount_cents"]:
+        fields.append(("Remboursement", f'<strong>{euros(case["amount_cents"])}</strong>'))
+    fields += [("Motif", escape(REASONS.get(case["reason"], ""))), ("Règle appliquée", RULES.get(case["rule"], ""))]
+    if case["details"]:
+        fields.append(("Précisions du client", escape(case["details"])))
     rows = "".join(f"<div><dt>{label}</dt><dd>{value}</dd></div>" for label, value in fields)
+    if case["status"] == "awaiting_parcel":
+        title = "Retour du colis"
+        choices = action_form(case["id"], "received", "Colis reçu")
+    else:
+        title = "Votre décision"
+        choices = action_form(case["id"], "approve", "Valider") + f"""
+            <details>
+              <summary class="button">Refuser</summary>
+              <form method="post" action="/shop/support/{case["id"]}">
+                <label for="motif-{case["id"]}">Motif envoyé au client</label>
+                <textarea id="motif-{case["id"]}" name="reason" maxlength="1000" rows="3" required></textarea>
+                <button class="button danger" name="action" value="reject">Confirmer le refus</button>
+              </form>
+            </details>"""
     return f"""<section class="event">
-          <p class="event-head"><span class="avatar bot" aria-hidden="true">IA</span><span><strong>Assistant IA</strong> a qualifié la demande</span><time>{long_date(request["created_at"])}</time></p>
+          <p class="event-head"><span class="avatar bot" aria-hidden="true">IA</span><span><strong>Assistant IA</strong> a qualifié la demande</span><time>{long_date(case["created_at"])}</time></p>
           <dl>{rows}</dl>
         </section>
         <section class="composer">
-          <h3>Votre décision</h3>
-          <div class="choices">
-            <form method="post" action="/shop/support/{thread_id}">
-              <button class="button primary" name="decision" value="yes">Valider</button>
-            </form>
-            <details>
-              <summary class="button">Refuser</summary>
-              <form method="post" action="/shop/support/{thread_id}">
-                <label for="motif-{thread_id}">Motif envoyé au client</label>
-                <textarea id="motif-{thread_id}" name="reason" maxlength="1000" rows="3" required></textarea>
-                <button class="button danger" name="decision" value="no">Confirmer le refus</button>
-              </form>
-            </details>
-          </div>
+          <h3>{title}</h3>
+          <div class="choices">{choices}</div>
         </section>"""
 
 
-def inquiry_body(inquiry: dict) -> str:
-    thread_id = inquiry["thread_id"]
-    shown = ticket(inquiry)
+def inquiry_body(case: dict) -> str:
     return f"""<section class="event">
-          <p class="event-head"><span class="avatar" aria-hidden="true">{shown["initials"]}</span><span><strong>{shown["customer"]}</strong> a écrit</span><time>{long_date(inquiry["created_at"])}</time></p>
-          <blockquote>{lines(inquiry["question"])}</blockquote>
+          <p class="event-head"><span class="avatar bot" aria-hidden="true">IA</span><span><strong>Assistant IA</strong> transmet une demande</span><time>{long_date(case["created_at"])}</time></p>
+          <blockquote>{lines(case["details"])}</blockquote>
         </section>
         <section class="composer">
-          <h3><label for="answer-{thread_id}">Répondre par mail</label></h3>
-          <form method="post" action="/shop/support/inquiry/{thread_id}">
-            <textarea id="answer-{thread_id}" name="answer" maxlength="1000" rows="5" required></textarea>
-            <button class="button primary">Envoyer la réponse</button>
+          <h3><label for="answer-{case["id"]}">Répondre par mail</label></h3>
+          <form method="post" action="/shop/support/{case["id"]}">
+            <textarea id="answer-{case["id"]}" name="answer" maxlength="1000" rows="5" required></textarea>
+            <button class="button primary" name="action" value="answer">Envoyer la réponse</button>
           </form>
         </section>"""
 
 
 def ticket_view(entry: dict) -> str:
     shown = ticket(entry)
-    body = inquiry_body(entry) if entry["action"] == "information" else request_body(entry)
-    order = "" if entry["action"] == "information" else f'<div><dt>Commande</dt><dd>{escape(entry["order_id"])}</dd></div>'
+    body = inquiry_body(entry) if entry["kind"] == "question" else request_body(entry)
+    order = "" if entry["kind"] == "question" else f'<div><dt>Commande</dt><dd>{escape(entry["order_id"])}</dd></div>'
     return f"""<article class="ticket" id="{shown["id"]}">
         <div class="thread">
-          <header><p>Ticket #{shown["id"]}</p><h2>{shown["subject"]}</h2><span class="status">À traiter</span></header>
+          <header><p>Ticket #{shown["id"]}</p><h2>{shown["subject"]}</h2><span class="status">{shown["status"]}</span></header>
           {body}
+          {timeline(entry.get("timeline", []))}
         </div>
         <aside aria-label="Informations du ticket">
           <h3>Client</h3>
           <p class="person"><span class="avatar" aria-hidden="true">{shown["initials"]}</span><span><strong>{shown["customer"]}</strong><br>{escape(entry["customer_id"])}</span></p>
           <h3>Ticket</h3>
           <dl>
-            <div><dt>Type</dt><dd>{ACTIONS[entry["action"]]}</dd></div>{order}
+            <div><dt>Type</dt><dd>{KINDS[entry["kind"]]}</dd></div>{order}
             <div><dt>Canal</dt><dd>Chat</dd></div>
             <div><dt>En attente depuis</dt><dd>{shown["waiting"]}</dd></div>
           </dl>
         </aside></article>"""
 
 
-def helpdesk(requests: list[dict], inquiries: list[dict], notice: str = "", error: bool = False) -> str:
-    entries = sorted(requests + [{**inquiry, "action": "information"} for inquiry in inquiries], key=lambda entry: entry["created_at"])
-    views = {"": "Tous les tickets", "exchange": "Échanges", "return": "Retours", "information": "Renseignements"}
+def helpdesk(entries: list[dict], notice: str = "", error: bool = False) -> str:
+    views = {"": "Tous les tickets", "exchange": "Échanges", "return": "Retours", "refund": "Remboursements", "question": "Renseignements"}
     filters = ""
     for action, label in views.items():
-        count = sum(action in ("", entry["action"]) for entry in entries)
+        count = sum(action in ("", entry["kind"]) for entry in entries)
         disabled = " disabled" if action and not count else ""
         filters += (f'<button type="button" data-filter="{action}" aria-pressed="{"false" if action else "true"}"{disabled}>'
                     f'<i class="dot {action}"></i>{label} <span>{count}</span></button>')
@@ -179,7 +256,7 @@ def icon(name: str) -> str:
 def mail_row(index: int, message: dict) -> str:
     subject, _, content = message["body"].partition("\n")
     sender = SENDERS[message["sender"]]
-    key = escape(f'{message["thread_id"]}@{message["created_at"].isoformat()}')
+    key = escape(f'{message["case_id"]}@{message["created_at"].isoformat()}')
     return f"""<li class="mail" data-key="{key}" data-index="{index}">
         <button type="button" class="star" aria-label="Suivre" aria-pressed="false">{icon("star")}</button>
         <a class="row" href="#message-{index}">
