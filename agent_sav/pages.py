@@ -89,6 +89,57 @@ def action_form(case_id: str, action: str, label: str) -> str:
             </form>"""
 
 
+def welcome(notice: str = "") -> str:
+    banner = f'<p class="notice" role="status">{escape(notice)}</p>' if notice else ""
+    return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Agent SAV · Démo</title><link rel="stylesheet" href="/theme.css">
+        <style>main {{ width: min(100% - 2rem, 40rem); margin: auto; padding-block: 3rem; display: grid; align-content: center; gap: 1.25rem; }} ul {{ margin: 0; padding-left: 1.2rem; }}
+        p, li {{ color: var(--muted); }} .notice {{ color: var(--ink); }}
+        button {{ justify-self: start; min-height: 2.75rem; padding: .5rem 1.25rem; border: 1px solid var(--accent-border);
+        border-radius: var(--radius); background: var(--accent-surface); color: var(--accent); cursor: pointer; }}</style></head>
+        <body><main>
+          <h1>Agent SAV</h1>
+          {banner}
+          <p>Vous jouez les deux rôles : le client qui écrit au service client, puis la boutique qui décide.</p>
+          <ul>
+            <li>Une boutique rien que pour vous, avec des clients et des commandes fictifs.</li>
+            <li>Elle est supprimée après 24 heures sans visite.</li>
+            <li>N’écrivez pas d’informations personnelles : vos messages sont traités par un modèle de langage.</li>
+          </ul>
+          <form method="post" action="/demo"><button>Ouvrir ma boutique</button></form>
+          <p>Un cookie garde votre boutique. Il ne sert à rien d’autre.</p>
+        </main></body></html>"""
+
+
+STEPS = {
+    "customer": "Client", "agent": "Agent", "recap": "Récapitulatif", "tool": "Outil",
+    "taken_back": "Réponse retenue", "case_opened": "Dossier ouvert", "case_command": "Action", "case_mail": "Mail",
+}
+COMMANDS = {
+    "auto": "accepté par les règles", "shop": "soumis à la boutique", "approve": "validé par la boutique",
+    "reject": "refusé par la boutique", "answer": "réponse de la boutique", "received": "colis reçu", "remind": "rappel",
+    "expire": "délai dépassé", "cancel": "annulé par le client",
+}
+
+
+def timeline(steps: list[dict]) -> str:
+    """Everything that led to a case: what was said, the tools called, the rules, the mails."""
+    rows = ""
+    for step in steps:
+        title = STEPS[step["kind"]]
+        if step["kind"] == "tool":
+            title = f"<code>{escape(step['title'])}</code>"
+        elif step["kind"] == "taken_back":
+            title += f" : {escape(step['title'])}"
+        args = ", ".join(f"{name} = {value}" for name, value in step.get("args", {}).items() if value not in (None, ""))
+        text = COMMANDS.get(step["text"], step["text"])
+        when = f"<time>{long_date(step['at'])}</time>" if "at" in step else ""
+        rows += f"""<li class="{step["kind"]}"><p><strong>{title}</strong>{when}</p>
+            {f'<p class="args">{escape(args)}</p>' if args else ""}<p class="text">{lines(text)}</p></li>"""
+    return f"""<details class="timeline"><summary>Chronologie de l’agent <span>{len(steps)} étapes</span></summary><ol>{rows}</ol></details>"""
+
+
 def request_body(case: dict) -> str:
     fields = []
     if case["item_id"]:
@@ -148,6 +199,7 @@ def ticket_view(entry: dict) -> str:
         <div class="thread">
           <header><p>Ticket #{shown["id"]}</p><h2>{shown["subject"]}</h2><span class="status">{shown["status"]}</span></header>
           {body}
+          {timeline(entry.get("timeline", []))}
         </div>
         <aside aria-label="Informations du ticket">
           <h3>Client</h3>

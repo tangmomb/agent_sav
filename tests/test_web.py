@@ -1,6 +1,4 @@
 import json
-from queue import Queue
-from threading import Thread
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -9,27 +7,10 @@ from uuid import uuid4
 import pytest
 from conftest import propose
 
-from agent_sav import web
-
 
 @pytest.fixture
-def boutique(database, support, monkeypatch):
-    servers = Queue()
-
-    class TestServer(web.ThreadingHTTPServer):
-        def serve_forever(self):
-            servers.put(self)
-            super().serve_forever()
-
-    monkeypatch.setattr(web, "ThreadingHTTPServer", TestServer)
-    worker = Thread(target=web.serve, args=(database, 0, support), daemon=True)
-    worker.start()
-    server = servers.get(timeout=10)
-    try:
-        yield f"http://127.0.0.1:{server.server_port}"
-    finally:
-        server.shutdown()
-        worker.join(timeout=5)
+def boutique(serve):
+    return serve()
 
 
 def send(boutique, route, data, *, form=False):
@@ -63,12 +44,17 @@ def test_from_the_chat_to_the_mailbox(boutique, model):
     assert "Boîte vide" in get_page(boutique, "/shop/support") or "SAV-" not in get_page(boutique, "/shop/support")
     confirmation = {"chat_id": chat_id, "message": "oui", "message_id": str(uuid4())}
     sent = send(boutique, "/api/support", confirmation)
-    assert sent == {"messages": ["Transmis."], "awaiting_confirmation": False}
+    assert (sent["messages"], sent["awaiting_confirmation"]) == (["Transmis."], False)
+    assert [step["title"] for step in recap["steps"]] == ["propose_return"] and "accord du client" in recap["steps"][0]["text"]
+    assert [step["title"] for step in sent["steps"]] == ["propose_return"] and "Le client a confirmé" in sent["steps"][0]["text"]
     assert send(boutique, "/api/support", confirmation) == sent
 
     page = get_page(boutique, "/shop/support")
     assert "Maille filée &lt;b&gt;" in page and "89,00 €" in page and "Article abîmé" in page
     case_id = page.split('action="/shop/support/')[1].split('"')[0]
+    for told in ("Chronologie de l’agent", "Mon pull est abîmé", "reason = damaged", "soumis à la boutique"):
+        assert told in page
+    assert chat_id not in page  # the id of a chat gives access to it
     route = f"/shop/support/{case_id}"
     assert "1 à 1 000" in send_error(boutique, route, {"action": "reject"}, form=True)
     assert "attend pas cette action" in send_error(boutique, route, {"action": "received"}, form=True)

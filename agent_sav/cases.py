@@ -68,6 +68,7 @@ class Cases:
                     CHECK ((kind IN ('return', 'exchange')) = (item_id IS NOT NULL)),
                     CHECK (kind <> 'refund' OR order_id IS NOT NULL)
                 );
+                ALTER TABLE shop.cases ADD COLUMN IF NOT EXISTS alerted_at timestamptz;  -- operator told about it
                 -- Whatever the rules say, an article is sent back once at a time and returned only once.
                 CREATE UNIQUE INDEX IF NOT EXISTS one_case_per_item ON shop.cases (item_id)
                     WHERE item_id IS NOT NULL AND (status IN ('opened', 'awaiting_shop', 'awaiting_parcel')
@@ -387,6 +388,28 @@ class Cases:
                 LEFT JOIN shop.order_items i USING (item_id) LEFT JOIN shop.products p ON p.id = i.product_id
                 WHERE c.status IN ('awaiting_shop', 'awaiting_parcel') ORDER BY c.created_at
             """).fetchall()
+
+    def to_alert(self) -> tuple[list[dict], datetime | None]:
+        """Cases the operator has not been told about, and when the last alert went out."""
+        with self.connect() as conn:
+            waiting = conn.execute("""
+                SELECT id, kind FROM shop.cases WHERE status = 'awaiting_shop' AND alerted_at IS NULL ORDER BY created_at
+            """).fetchall()
+            return waiting, conn.execute("SELECT max(alerted_at) AS last FROM shop.cases").fetchone()["last"]
+
+    def alerted(self, case_ids: list[str]) -> None:
+        with self.connect() as conn:
+            conn.execute("UPDATE shop.cases SET alerted_at = %s WHERE id = ANY(%s)", (self.clock(), case_ids))
+
+    def history(self, case_id: str) -> list[dict]:
+        """What happened to a case: its opening, its commands and its emails, in order."""
+        with self.connect() as conn:
+            return conn.execute("""
+                SELECT created_at AS at, 'opened' AS kind, route AS text FROM shop.cases WHERE id = %(id)s
+                UNION ALL SELECT created_at, 'command', kind FROM shop.case_commands WHERE case_id = %(id)s AND outcome = 'applied'
+                UNION ALL SELECT created_at, 'mail', split_part(body, E'\\n', 1) FROM shop.case_messages WHERE case_id = %(id)s
+                ORDER BY at
+            """, {"id": case_id}).fetchall()
 
     def mailbox(self, customer_id: str) -> list[dict]:
         """Emails sent to the customer, newest first."""

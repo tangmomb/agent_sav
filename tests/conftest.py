@@ -1,5 +1,7 @@
 import os
 from datetime import datetime, timedelta, timezone
+from queue import Queue
+from threading import Thread
 from uuid import uuid4
 
 import psycopg
@@ -8,6 +10,7 @@ from langchain_core.messages import AIMessage
 from psycopg import sql
 from psycopg.conninfo import make_conninfo
 
+from agent_sav import web
 from agent_sav.database import initialize_database
 from agent_sav.service import Support
 from agent_sav.shop import DEFAULT_DSN
@@ -22,6 +25,7 @@ def no_network(monkeypatch):
     """Tests script the model, and never call it."""
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    monkeypatch.delenv("CONTACT_MCP_URL", raising=False)
 
 
 @pytest.fixture
@@ -84,6 +88,31 @@ def clock():
 @pytest.fixture
 def support(database, model, clock):
     return Support(database, model=model, clock=clock)
+
+
+@pytest.fixture
+def serve(database, support, monkeypatch):
+    """Starts the website, shared or public, and gives its address."""
+    servers, running = Queue(), []
+
+    class TestServer(web.ThreadingHTTPServer):
+        def serve_forever(self):
+            servers.put(self)
+            super().serve_forever()
+
+    monkeypatch.setattr(web, "ThreadingHTTPServer", TestServer)
+
+    def start(**options):
+        worker = Thread(target=web.serve, args=(database, 0, support), kwargs=options, daemon=True)
+        worker.start()
+        server = servers.get(timeout=10)
+        running.append((server, worker))
+        return f"http://127.0.0.1:{server.server_port}"
+
+    yield start
+    for server, worker in running:
+        server.shutdown()
+        worker.join(timeout=5)
 
 
 class Chat:

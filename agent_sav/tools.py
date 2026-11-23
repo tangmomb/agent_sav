@@ -32,7 +32,7 @@ class ItemArgs(Args):
 Reason = Literal["wrong_size", "changed_mind", "damaged", "wrong_item"]
 REASON = ("wrong_size : taille ou coupe ; changed_mind : ne plaît pas ; damaged : abîmé ou défectueux ; "
           "wrong_item : la boutique a envoyé un autre article que celui commandé")
-DETAILS = "Ce que le client a dit d’utile à la boutique, en une phrase. Vide sinon."
+DETAILS = "Ce que le client a dit d’utile à la boutique, en une phrase, en français. Vide sinon."
 
 
 class ReturnArgs(ItemArgs):

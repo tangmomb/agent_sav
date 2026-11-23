@@ -17,7 +17,6 @@ from .database import open_checkpointer
 from .model import Complete, complete
 from .shop import Shop
 
-
 log = logging.getLogger(__name__)
 RESUMED = "Un incident avait interrompu votre message précédent, repris ici. Le dernier n’a pas été pris en compte."
 
@@ -35,6 +34,33 @@ def message_ids(messages: list[AnyMessage]) -> list[str | None]:
     return [message.id if isinstance(message, HumanMessage)
             else (message.artifact or {}).get("reply_id") if isinstance(message, ToolMessage) else None
             for message in messages]
+
+
+def events(messages: list[AnyMessage], taken_back: list[dict], every: list[AnyMessage] | None = None) -> list[dict]:
+    """Messages as steps anyone can read: what was said, which tools were called, what they answered."""
+    calls = {call["id"]: call for message in every or messages if isinstance(message, AIMessage) for call in message.tool_calls}
+    answered = {message.tool_call_id for message in messages if isinstance(message, ToolMessage)}
+    told = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            told.append({"kind": "customer", "title": "", "text": str(message.text)})
+        elif isinstance(message, AIMessage):
+            if message.text and not message.tool_calls:
+                told.append({"kind": "agent", "title": "", "text": str(message.text)})
+            told += [{"kind": "tool", "title": call["name"], "args": call["args"],
+                      "text": "Autorisé par les règles. En attente de l’accord du client."}
+                     for call in message.tool_calls if call["id"] not in answered]
+        else:
+            artifact = message.artifact or {}
+            if artifact.get("recap"):
+                told.append({"kind": "recap", "title": "", "text": artifact["recap"]})
+            if artifact.get("reply"):
+                told.append({"kind": "customer", "title": "", "text": artifact["reply"]})
+            told.append({"kind": "tool", "title": message.name, "args": calls.get(message.tool_call_id, {}).get("args", {}),
+                         "text": str(message.text)[:600]})
+        told += [{"kind": "taken_back", "title": each["problem"], "text": each["text"]}
+                 for each in taken_back if each["after"] == message.id]
+    return told
 
 
 class Support:
@@ -87,7 +113,19 @@ class Support:
         finally:
             self.run_cases()
         answer = self.answer(snapshot, message_id)
-        return {**answer, "messages": [*late["messages"], *answer["messages"]]} if late else answer
+        return {**answer, **{key: [*late[key], *answer[key]] for key in ("messages", "steps")}} if late else answer
+
+    def timeline(self, case_id: str) -> list[dict]:
+        """The chat that led to a case, step by step, then what happened to the case."""
+        case = self.cases.get(case_id)
+        chat_id, _, _ = case["request_key"].partition(":")
+        told = []
+        if chat_id.startswith("chat-"):
+            with open_checkpointer(self.dsn) as checkpointer:
+                values = self.conversation_graph(checkpointer).get_state({"configurable": {"thread_id": chat_id}}).values
+            told = events(values.get("messages", []), values.get("taken_back", []))
+        return told + [{"kind": f"case_{each['kind']}", "title": "", "text": each["text"], "at": each["at"]}
+                       for each in self.cases.history(case_id)]
 
     def conversation_graph(self, checkpointer):
         return build_conversation_graph(checkpointer, self.shop, self.cases, self.model)
@@ -107,7 +145,11 @@ class Support:
         waiting = bool(snapshot.interrupts) and following == len(ids)
         if waiting:
             texts.append(snapshot.interrupts[0].value["question"])
-        return {"messages": texts, "awaiting_confirmation": waiting}
+        # A « yes » is kept with the result of the action it agreed to.
+        first = position - 1 if isinstance(messages[position - 1], ToolMessage) else position
+        return {"messages": texts, "awaiting_confirmation": waiting,
+                "steps": [event for event in events(messages[first:following], snapshot.values.get("taken_back", []), messages)
+                          if event["kind"] in ("tool", "taken_back")]}
 
     # Cases.
 

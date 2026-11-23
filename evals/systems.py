@@ -64,8 +64,10 @@ class Agent:
         """The tools the agent called, and what the rules answered."""
         with open_checkpointer(self.support.dsn) as checkpointer:
             graph = self.support.conversation_graph(checkpointer)
-            messages = graph.get_state({"configurable": {"thread_id": self.chat_id}}).values.get("messages", [])
-        return [f"{message.name} {json.dumps(call['args'], ensure_ascii=False)} → {str(message.text)[:160]}"
+            values = graph.get_state({"configurable": {"thread_id": self.chat_id}}).values
+        messages = values.get("messages", [])
+        refused = [f"réponse retenue ({each['problem']}) : {each['text']}" for each in values.get("taken_back", [])]
+        return refused + [f"{message.name} {json.dumps(call['args'], ensure_ascii=False)} → {str(message.text)[:160]}"
                 for message in messages if isinstance(message, ToolMessage)
                 for other in messages if isinstance(other, AIMessage)
                 for call in other.tool_calls if call["id"] == message.tool_call_id]

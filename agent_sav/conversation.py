@@ -11,10 +11,11 @@
 
 The model chooses what to read and what to propose. The policy node allows or refuses without a model,
 confirm shows one summary of all the proposals and waits for the customer, and apply does a single write
-per run, keyed by the tool call. guard checks, without a model
-either, that the answer only states what the chat really holds.
+per run, keyed by the tool call. guard checks, without a model either, that the answer only states what the
+chat really holds.
 """
 
+import operator
 from dataclasses import dataclass
 from typing import Annotated, NotRequired, TypedDict
 
@@ -53,6 +54,7 @@ class State(MessagesState, total=False):
     steps: int
     tokens: int
     rejected: list[str]  # why guard refused the answers to this customer message
+    taken_back: Annotated[list[dict], operator.add]  # every answer guard refused, for the timeline
     proposals: list[dict]  # the actions being considered, from the model's calls to their outcomes
     reply: dict | None  # the customer's yes, until it is kept with the first outcome
 
@@ -120,7 +122,8 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
         problem = ungrounded(str(answer.text), state["messages"][:-1])
         if problem is None:
             return {"rejected": []}
-        return {"messages": [RemoveMessage(id=answer.id)], "rejected": [*state.get("rejected", []), problem]}
+        return {"messages": [RemoveMessage(id=answer.id)], "rejected": [*state.get("rejected", []), problem],
+                "taken_back": [{"after": state["messages"][-2].id, "text": str(answer.text), "problem": problem}]}
 
     def route_guard(state: State) -> str:
         if not state["rejected"]:

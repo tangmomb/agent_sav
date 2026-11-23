@@ -76,7 +76,28 @@ function offer(chat, labels) {
   chat.log.scrollTop = chat.log.scrollHeight;
 }
 
+// What the agent did before answering, for whoever looks at the demo.
+function showSteps(chat, steps) {
+  if (!steps.length) return;
+  const details = document.createElement("details");
+  details.className = "steps";
+  const summary = document.createElement("summary");
+  summary.textContent = `Voir ce qu’a fait l’agent (${steps.length})`;
+  const list = document.createElement("ol");
+  for (const step of steps) {
+    const entry = document.createElement("li");
+    const name = document.createElement("code");
+    name.textContent = step.kind === "tool" ? step.title : "réponse retenue";
+    const text = step.kind === "tool" ? step.text : `${step.title} : « ${step.text} »`;
+    entry.append(name, " ", text.length > 160 ? text.slice(0, 160) + "…" : text);
+    list.append(entry);
+  }
+  details.append(summary, list);
+  chat.log.append(details);
+}
+
 function showResult(chat, result) {
+  showSteps(chat, result.steps);
   for (const text of result.messages) say(chat, text);
   if (result.awaiting_confirmation) offer(chat, ["Oui, je confirme", "Non, merci"]);
 }
@@ -88,7 +109,9 @@ async function post(url, payload) {
     body: JSON.stringify(payload),
   });
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error);
+  if (!response.ok) {
+    throw Object.assign(new Error(result.error), [401, 429].includes(response.status) ? {shown: result.error} : {});
+  }
   return result;
 }
 
@@ -116,8 +139,8 @@ async function send(chat, payload) {
     pending.remove();
     chat.failedPayload = undefined;
     showResult(chat, result);
-  } catch {
-    pending.textContent = "Le message n’a pas abouti. Renvoyez-le pour réessayer.";
+  } catch (error) {
+    pending.textContent = error.shown ?? "Le message n’a pas abouti. Renvoyez-le pour réessayer.";
     chat.failedPayload = payload;
     chat.draft = payload.message;
     if (chat === active) input.value = chat.draft;

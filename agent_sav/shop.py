@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from uuid import uuid4
 
 import psycopg
@@ -55,6 +57,12 @@ class Shop:
                 -- A chat belongs to the customer who opened it: neither the browser nor the model says who they are.
                 CREATE TABLE IF NOT EXISTS shop.chats (
                     id text PRIMARY KEY,
+                    customer_id text NOT NULL REFERENCES shop.customers,
+                    created_at timestamptz NOT NULL DEFAULT now()
+                );
+                -- Tokens of the MCP server: only their hash is kept.
+                CREATE TABLE IF NOT EXISTS shop.mcp_tokens (
+                    token_hash text PRIMARY KEY,
                     customer_id text NOT NULL REFERENCES shop.customers,
                     created_at timestamptz NOT NULL DEFAULT now()
                 );
@@ -124,3 +132,21 @@ class Shop:
                 SELECT c.id, c.first_name, c.name FROM shop.chats JOIN shop.customers c ON c.id = customer_id
                 WHERE chats.id = %s
             """, (chat_id,)).fetchone()
+
+    def create_token(self, customer_id: str) -> str | None:
+        """A new MCP token for a customer, shown once."""
+        token = f"sav_{secrets.token_urlsafe(32)}"
+        with psycopg.connect(self.dsn) as conn:
+            created = conn.execute(
+                "INSERT INTO shop.mcp_tokens (token_hash, customer_id) SELECT %s, id FROM shop.customers WHERE id = %s",
+                (hashlib.sha256(token.encode()).hexdigest(), customer_id),
+            ).rowcount
+        return token if created else None
+
+    def token_customer(self, token: str) -> str | None:
+        if not token:
+            return None
+        with psycopg.connect(self.dsn) as conn:
+            row = conn.execute("SELECT customer_id FROM shop.mcp_tokens WHERE token_hash = %s",
+                               (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
+        return row[0] if row else None

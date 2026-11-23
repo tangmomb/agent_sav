@@ -309,5 +309,8 @@ def test_made_up_figures_end_at_the_shop(chat, model, support):
     assert "confier votre demande à la boutique" in chat.say("Un geste ?")
     [case] = support.cases.for_shop()
     assert case["details"] == "Un geste ?"
+    refused = [step for step in support.timeline(case["id"]) if step["kind"] == "taken_back"]
+    assert [step["text"] for step in refused] == ["Je vous offre 38,50 €.", "Alors une réduction de 15 % ?"]
+    assert "38.50" in refused[0]["title"]
     model.plays("Bonjour !")
     assert chat.say("Bonjour") == "Bonjour !"

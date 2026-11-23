@@ -1,21 +1,31 @@
 flowchart TD
-    START([START]) --> collection["collect<br/>LLM : intention, commande, article, variante<br/>Questions via interrupt"]
-    collection -->|information| write_question["request_support_question<br/>Saisie et transmission de la question"]
-    write_question --> END
-    collection -->|request_complete| review["validate_intent<br/>Récapitulatif et accord du client"]
-    review -->|intent_needs_correction| collection
-    review -->|exchange| stock[check_stock]
-    review -->|return| register
-    review -->|abandon| END
-    stock -->|out_of_stock| offer["Rupture : proposer un retour<br/>LLM : réponse en texte libre"]
-    offer -->|return| register
-    offer -->|abandon| END
-    stock -->|available| register["register_request<br/>en attente de la boutique"]
-    register --> notify["notify_shop<br/>+ message client : demande transmise"]
-    notify --> shop_review["⏸ INTERRUPT 1<br/>validation en boutique"]
-    shop_review -->|rejected| reject["Mail client : refus et motif"]
-    shop_review -->|approved| email["send_confirmation_email<br/>lien signé"]
-    email --> customer_review["⏸ INTERRUPT 2<br/>confirmation client par mail"]
-    customer_review -->|declined| cancel["Demande annulée"]
-    customer_review -->|confirmed| summary["mail récapitulatif"]
-    reject & cancel & summary --> END([END])
+    subgraph conversation["Graphe conversation : un thread par chat"]
+        START([message du client]) --> agent["agent<br/>LLM : lire, proposer ou répondre"]
+        agent -->|appels d'outils| tools["tools<br/>lectures exécutées, actions gardées en propositions"]
+        tools -->|lectures seules| agent
+        tools -->|propositions| policy{"policy<br/>règles, sans LLM"}
+        policy -->|toutes refusées| agent
+        policy -->|autorisées| confirm["⏸ confirm<br/>un récapitulatif, accord du client"]
+        policy -->|questions seules| apply
+        confirm -->|oui| apply["apply<br/>une écriture rejouable par passage"]
+        confirm -->|autre réponse| agent
+        apply --> agent
+        agent -->|réponse| guard{"guard<br/>montants et annonces vérifiés, sans LLM"}
+        guard -->|fondée| ANSWER([réponse envoyée])
+        guard -->|non fondée| agent
+        tools & policy & guard -->|budget épuisé| give_up["give_up<br/>transmis à la boutique"]
+    end
+
+    apply & give_up -.->|dossier ouvert en base| intake
+
+    subgraph dossier["Graphe dossier : un thread par demande"]
+        intake -->|auto| approve
+        intake -->|boutique| submit --> shop_review["⏸ shop_review<br/>décision ou réponse de la boutique"]
+        shop_review --> approve & reject & answer & cancel
+        approve -->|remboursement| settle
+        approve -->|retour, échange| await_parcel["⏸ await_parcel<br/>14 jours"]
+        await_parcel -->|colis reçu| settle["settle<br/>remboursement ou expédition"]
+        await_parcel -->|7 jours| remind --> await_parcel
+        await_parcel -->|14 jours| expire
+        await_parcel -->|annulation| cancel
+    end
