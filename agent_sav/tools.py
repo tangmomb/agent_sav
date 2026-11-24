@@ -75,16 +75,24 @@ ACTION_TOOLS = {
                                        "Le client devra confirmer."),
     "propose_refund": (RefundArgs, "Propose un remboursement sans retour d’article : colis perdu ou geste commercial. "
                                    "Le client devra confirmer."),
-    "cancel_case": (CancelArgs, "Propose l’annulation d’un dossier SAV en cours. Le client devra confirmer."),
+    "cancel_case": (CancelArgs, "Propose l’annulation d’un retour, d’un échange ou d’un remboursement en cours. Le client devra confirmer."),
     "escalate": (EscalateArgs, "Transmet une demande à l’équipe de la boutique, qui répond par mail. Pour ce que ni les "
                                "autres outils ni la politique SAV ne règlent."),
 }
 ARGS = {name: args for name, (args, _) in (READ_TOOLS | ACTION_TOOLS).items()}
 
 
+def parameters(args: type[Args]) -> dict:
+    """The schema of the arguments, without the titles Pydantic adds: they only repeat the names."""
+    schema = args.model_json_schema()
+    for described in (schema, *schema["properties"].values()):
+        described.pop("title", None)
+    return schema
+
+
 def schemas() -> list[dict]:
     return [{"type": "function", "function": {
-        "name": name, "description": description, "parameters": args.model_json_schema(),
+        "name": name, "description": description, "parameters": parameters(args),
     }} for name, (args, description) in (READ_TOOLS | ACTION_TOOLS).items()]
 
 

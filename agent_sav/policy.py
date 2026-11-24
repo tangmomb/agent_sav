@@ -127,6 +127,8 @@ def decide_cancel(case: dict | None) -> Verdict:
         return refused("unknown_case", "Ce dossier n’appartient pas au client.")
     if case["status"] not in ("opened", "awaiting_shop", "awaiting_parcel"):
         return refused("closed", "Ce dossier est déjà clos.")
+    if case["kind"] == "question":  # the shop's answer is all its graph waits for
+        return refused("question_sent", "Une question transmise à la boutique ne s’annule pas ; la boutique y répondra par mail.")
     return Verdict("auto", "cancel")
 
 

@@ -70,6 +70,19 @@ def test_refunds(bought, motive, amount, expected):
     assert (verdict.outcome, verdict.rule, verdict.amount_cents) == expected
 
 
+@pytest.mark.parametrize(("case", "expected"), [
+    ({"kind": "return", "status": "awaiting_parcel"}, ("auto", "cancel")),
+    ({"kind": "refund", "status": "awaiting_shop"}, ("auto", "cancel")),
+    ({"kind": "exchange", "status": "completed"}, ("refused", "closed")),
+    ({"kind": "question", "status": "awaiting_shop"}, ("refused", "question_sent")),
+    ({"kind": "question", "status": "completed"}, ("refused", "closed")),
+    (None, ("refused", "unknown_case")),
+])
+def test_cancellations(case, expected):
+    verdict = policy.decide_cancel(case)
+    assert (verdict.outcome, verdict.rule) == expected
+
+
 def test_the_written_policy_shows_the_figures_of_the_rules():
     text = policy.customer_policy()
     assert f"dans les {policy.RETURN_DAYS} jours" in text and "100,00 €" in text
@@ -79,10 +92,13 @@ def test_the_written_policy_shows_the_figures_of_the_rules():
 @pytest.mark.parametrize(("message", "expected"), [
     ("oui", True), ("ouai", True), ("Oui !", True), ("ok merci", True), ("Oui, c’est bon", True), ("Je confirme le retour", True),
     ("Oui, je confirme", True), ("Oui je confirme le retour du pull", True), ("d’accord, s’il vous plaît", True),
-    ("oui pour cette demande", True),
+    ("oui pour cette demande", True), ("Je suis d’accord", True), ("Bien sûr !", True), ("go", True), ("Oki merci", True),
+    ("👍", True), ("👍🏽 merci", True),
     ("non", False), ("merci", False), ("oui mais en L", False), ("oui, enfin non", False), ("le pull", False),
     ("oui en noir", False), ("oui, en M", False), ("oui ?", False), ("oui et aussi le jean", False),
     ("oui rembourse 500", False), ("Annulez", False), ("ouistiti", False),
+    ("je ne suis pas d’accord", False), ("bien sûr que non", False), ("bien sûr, en noir", False), ("👍 mais en L", False),
+    ("👍 en noir", False), ("👎", False), ("👍👎", False), ("gomme", False), ("non 👍", False),
 ])
 def test_only_a_plain_yes_confirms(message, expected):
     assert confirms(message, "Retour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)") is expected

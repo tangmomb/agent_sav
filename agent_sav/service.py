@@ -13,7 +13,7 @@ from langgraph.types import Command
 from .case_graph import build_case_graph
 from .cases import Cases
 from .conversation import Context, build_conversation_graph
-from .database import open_checkpointer
+from .database import open_checkpointer, rename_state_key
 from .model import Complete, complete
 from .shop import Shop
 
@@ -77,6 +77,7 @@ class Support:
         config = {"configurable": {"thread_id": thread_id}, "run_name": "SAV", "tags": ["sav"]}
         with open_checkpointer(self.dsn) as checkpointer, psycopg.connect(self.dsn) as lock:
             lock.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (thread_id,))
+            rename_state_key(checkpointer.conn, thread_id, "proposals", "pending_actions")  # chats begun under the old name; can go once they are over
             yield build(checkpointer), config
 
     # Chats.
@@ -108,7 +109,7 @@ class Support:
                         run(Command(resume={"message": message, "id": message_id}))
                     else:
                         run({"messages": [HumanMessage(content=message, id=message_id)],
-                             "steps": 0, "tokens": 0, "rejected": [], "proposals": [], "reply": None})
+                             "steps": 0, "tokens": 0, "rejected": [], "pending_actions": [], "reply": None})
                 snapshot = graph.get_state(config)
         finally:
             self.run_cases()

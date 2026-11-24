@@ -1,7 +1,7 @@
 """Graph of the chat: an agent with tools, always available to the customer.
 
     agent ⇄ tools                      (reads: orders, stock, cases, policy)
-      │       └─ proposals → policy ├─ all refused → agent
+      │       └─ actions   → policy ├─ all refused → agent
       │                             ├─ questions only → apply → agent
       │                             └─ allowed → confirm ├─ yes → apply, once for each → agent
       │                                                  └─ anything else → agent
@@ -10,7 +10,7 @@
       └─ out of budget → give_up → END
 
 The model chooses what to read and what to propose. The policy node allows or refuses without a model,
-confirm shows one summary of all the proposals and waits for the customer, and apply does a single write
+confirm shows one summary of all the pending actions and waits for the customer, and apply does a single write
 per run, keyed by the tool call. guard checks, without a model either, that the answer only states what the
 chat really holds.
 """
@@ -37,7 +37,7 @@ from .shop import Shop
 
 MAX_STEPS = 8  # model calls for one customer message
 MAX_TOKENS = 60000  # for one customer message
-MAX_PROPOSALS = 5  # in one summary
+MAX_PENDING_ACTIONS = 5  # in one summary
 MAX_REJECTED = 2  # answers guard may refuse for one customer message
 HISTORY = 40  # messages the model sees
 ASK = "Confirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
@@ -56,7 +56,7 @@ class State(MessagesState, total=False):
     tokens: int
     rejected: list[str]  # why guard refused the answers to this customer message
     taken_back: Annotated[list[dict], operator.add]  # every answer guard refused, for the timeline
-    proposals: list[dict]  # the actions being considered, from the model's calls to their outcomes
+    pending_actions: list[dict]  # the actions being considered, from the model's calls to their outcomes
     reply: dict | None  # the customer's yes, until it is kept with the first outcome
 
 
@@ -70,8 +70,9 @@ INSTRUCTIONS = """Tu es l’agent du service client de Maison Orme, une boutique
 au client {first_name}, avec des phrases courtes et sans mise en forme Markdown. Nous sommes le {today}.
 
 Méthode :
-- Cherche avec les outils au lieu de demander ce qu’ils savent déjà. Ne pose une question que s’il manque une information, \
-une seule à la fois.
+- Dans ta première réponse du chat, commence par « Bonjour {first_name} ». Ne salue plus ensuite.
+- Avant de poser une question au client, cherche la réponse avec les outils. Ne lui demande que ce qu’ils ne peuvent \
+pas donner, une seule question à la fois.
 - Commandes, articles et dossiers : uniquement ce que disent list_orders et list_cases. Conditions et délais : uniquement \
 read_policy. N’invente ni date, ni montant, ni règle.
 - Un article trop petit ou trop grand appelle plutôt un échange : check_stock donne les variantes. Si le client a dit ce \
@@ -114,6 +115,8 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
             system += ("\n\nTa réponse précédente n’a pas été envoyée au client. Raison : " + rejected[-1] + ". "
                        "Réponds sans cela, ou appelle l’outil qui manque.")
         answer = model(system, recent(state["messages"]), toolbox.schemas())
+        if answer.tool_calls:  # the customer never sees a text that comes with a call: the model must not think it was said
+            answer = answer.model_copy(update={"content": ""})
         used = (answer.usage_metadata or {}).get("total_tokens", 0)
         return {"messages": [answer], "steps": state.get("steps", 0) + 1, "tokens": state.get("tokens", 0) + used}
 
@@ -139,8 +142,8 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
                            status="error" if error else "success")
 
     def tools(state: State, runtime: Runtime[Context]) -> State:
-        """Runs the reading tools, and keeps the actions as proposals."""
-        results, proposals = [], []
+        """Runs the reading tools, and keeps the actions for the next nodes."""
+        results, pending = [], []
         for call in state["messages"][-1].tool_calls:
             if call["name"] not in toolbox.ARGS:
                 results.append(result(call, "Outil inconnu.", error=True))
@@ -153,11 +156,11 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
                 continue
             if call["name"] in toolbox.READ_TOOLS:
                 results.append(result(call, toolbox.read(call["name"], args, runtime.context.customer_id, shop, cases)))
-            elif len(proposals) == MAX_PROPOSALS:
+            elif len(pending) == MAX_PENDING_ACTIONS:
                 results.append(result(call, "Trop d’actions à la fois : refais cet appel après les premières.", error=True))
             else:
-                proposals.append({"call": {"id": call["id"], "name": call["name"]}, "args": args})
-        return {"messages": results, "proposals": proposals}
+                pending.append({"call": {"id": call["id"], "name": call["name"]}, "args": args})
+        return {"messages": results, "pending_actions": pending}
 
     def next_step(state: State) -> str:
         """Back to the model, unless this message has used its budget."""
@@ -168,39 +171,39 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
     def policy(state: State, runtime: Runtime[Context]) -> State:
         """Applies the shop's rules to each proposal. No model here."""
         refusals, allowed = [], []
-        for proposal in state["proposals"]:
+        for proposal in state["pending_actions"]:
             verdict, summary = cases.propose(runtime.context.customer_id, proposal["call"]["name"], proposal["args"])
             if verdict.outcome == "refused":
                 refusals.append(result(proposal["call"], f"Refusé par les règles ({verdict.rule}). {verdict.message}"))
             else:
                 allowed.append({**proposal, "summary": summary})
-        return {"proposals": allowed, "messages": refusals}
+        return {"pending_actions": allowed, "messages": refusals}
 
     def route_policy(state: State) -> str:
-        if not state["proposals"]:
+        if not state["pending_actions"]:
             return next_step(state)
-        return "confirm" if any(proposal["summary"] for proposal in state["proposals"]) else "apply"
+        return "confirm" if any(proposal["summary"] for proposal in state["pending_actions"]) else "apply"
 
     def confirm(state: State) -> State:
         """Waits for the customer's agreement. Anything but a plain yes goes back to the agent."""
-        proposals = state["proposals"]
-        summary = "\n\n".join(proposal["summary"] for proposal in proposals if proposal["summary"])
+        pending = state["pending_actions"]
+        summary = "\n\n".join(proposal["summary"] for proposal in pending if proposal["summary"])
         recap = f"{summary}\n\n{ASK}"
-        reply = interrupt({"question": recap, "kind": "confirm"}, response_schema=CustomerReply)
+        reply = interrupt({"question": recap}, response_schema=CustomerReply)
         budget = {"steps": 0, "tokens": 0, "rejected": []}  # a new customer message
         if confirms(reply["message"], summary):
             return {**budget, "reply": {"reply": reply["message"], "reply_id": reply.get("id"), "recap": summary}}
-        return {**budget, "proposals": [], "messages": [
+        return {**budget, "pending_actions": [], "messages": [
             *(result(proposal["call"], f"Récapitulatif montré au client :\n{proposal['summary']}\n"
                      "Il n’a pas confirmé : rien n’a été enregistré. Sa réponse suit.",
                      artifact=None if number else {"recap": recap})
-              for number, proposal in enumerate(proposals)),
+              for number, proposal in enumerate(pending)),
             HumanMessage(content=reply["message"], id=reply.get("id")),
         ]}
 
     def apply(state: State, config: RunnableConfig, runtime: Runtime[Context]) -> State:
         """Does one proposal. The only step that writes; replaying it finds what it already wrote."""
-        proposal, *left = state["proposals"]
+        proposal, *left = state["pending_actions"]
         call, args = proposal["call"], proposal["args"]
         key = f"{config['configurable']['thread_id']}:{call['id']}"
         if call["name"] == "cancel_case":
@@ -225,7 +228,7 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
         if reply := state.get("reply"):  # kept once, with the first outcome
             outcome = f"Le client a confirmé. {outcome}"
             artifact |= reply
-        return {"proposals": left, "reply": None, "messages": [result(call, outcome, artifact=artifact)]}
+        return {"pending_actions": left, "reply": None, "messages": [result(call, outcome, artifact=artifact)]}
 
     def give_up(state: State, config: RunnableConfig, runtime: Runtime[Context]) -> State:
         """Hands the request to the shop instead of going round in circles."""
@@ -248,9 +251,9 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
     builder.add_conditional_edges("agent", route_agent, ["tools", "guard"])
     builder.add_conditional_edges("guard", route_guard, [END, "agent", "give_up"])
     builder.add_conditional_edges(
-        "tools", lambda state: "policy" if state["proposals"] else next_step(state), ["policy", "agent", "give_up"])
+        "tools", lambda state: "policy" if state["pending_actions"] else next_step(state), ["policy", "agent", "give_up"])
     builder.add_conditional_edges("policy", route_policy, ["confirm", "apply", "agent", "give_up"])
     for node in ("confirm", "apply"):
-        builder.add_conditional_edges(node, lambda state: "apply" if state["proposals"] else "agent", ["apply", "agent"])
+        builder.add_conditional_edges(node, lambda state: "apply" if state["pending_actions"] else "agent", ["apply", "agent"])
     builder.add_edge("give_up", END)
     return builder.compile(checkpointer=checkpointer)

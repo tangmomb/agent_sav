@@ -1,12 +1,15 @@
+import json
 from uuid import uuid4
 
 import psycopg
 import pytest
 from conftest import LOST, PULL, TSHIRT, Chat, propose, refund
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from agent_sav import conversation
-from agent_sav.service import RESUMED, UnknownChat
+from agent_sav.database import rename_state_key
+from agent_sav.service import RESUMED, Support, UnknownChat
+from agent_sav.tools import schemas
 
 
 def last_result(model):
@@ -23,6 +26,26 @@ def test_the_agent_reads_then_answers(chat, model, query):
     assert PULL in last_result(model) and "in_transit" in last_result(model)
     assert "89,00 €" in last_result(model) and "8900" not in last_result(model)
     assert cases(query) == []
+
+
+def test_schemas_have_no_titles():
+    assert '"title"' not in json.dumps(schemas())
+
+
+def test_what_comes_with_a_call_is_not_kept(database, clock):
+    """The customer never sees it, and guard never checks it."""
+    seen = []
+
+    def model(system, messages, tools):
+        seen.append(messages)
+        if len(seen) == 1:
+            return AIMessage(content="Bonjour Camille ! Je regarde.", tool_calls=[{"id": "a", "name": "list_orders", "args": {}}])
+        return AIMessage(content="Bonjour Camille ! Elle est en transit.")
+
+    answer = Chat(Support(database, model=model, clock=clock)).say("Où en est ma commande ?")
+    assert answer == "Bonjour Camille ! Elle est en transit."
+    [_, called, read] = seen[1]
+    assert called.text == "" and called.tool_calls and isinstance(read, ToolMessage)
 
 
 def test_tools_only_show_the_signed_in_customer(support, model):
@@ -210,6 +233,29 @@ def test_the_customer_cancels_a_case(chat, model, query, support):
     chat.say("oui")
     assert cases(query)[0][5] == "cancelled"
     assert query("SELECT quantity FROM shop.stock WHERE product_id = 'ART-021' AND size = 'L'") == [(10,)]
+
+
+@pytest.mark.parametrize(("reply", "opened"), [("oui", 1), ("non", 0)])
+def test_a_chat_paused_before_a_state_key_was_renamed(chat, model, query, support, reply, opened):
+    model.plays(propose("return", reason="changed_mind"))
+    chat.say("Je veux retourner mon pull")
+    with support.thread(chat.id, support.conversation_graph) as (graph, _):  # as the version before saved it
+        rename_state_key(graph.checkpointer.conn, chat.id, "pending_actions", "proposals")
+    assert query("SELECT count(*) FROM langgraph.checkpoint_blobs WHERE channel = 'pending_actions'") == [(0,)]
+    model.plays("Voilà.")
+    assert chat.say(reply) == "Voilà." and not chat.waiting
+    assert len(cases(query)) == opened
+    assert query("SELECT count(*) FROM langgraph.checkpoint_blobs WHERE channel = 'proposals'") == [(0,)]
+
+
+def test_a_question_sent_to_the_shop_cannot_be_cancelled(chat, model, query, support):
+    model.plays(("escalate", {"question": "Faites-vous des cartes cadeaux ?"}), "La boutique vous répondra par mail.")
+    chat.say("Des cartes cadeaux ?")
+    [case] = support.cases.of_customer("CLI-001")
+    model.plays(("cancel_case", {"case_id": case["id"]}), "Elle ne s’annule pas.")
+    assert chat.say("Annulez ma question") == "Elle ne s’annule pas."
+    assert not chat.waiting and "question_sent" in last_result(model)
+    assert query("SELECT count(*) FROM shop.case_commands") == [(0,)]
 
 
 def test_wrong_calls_come_back_as_errors(chat, model):

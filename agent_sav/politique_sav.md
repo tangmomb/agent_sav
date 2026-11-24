@@ -25,7 +25,7 @@
 - La boutique peut accorder un geste, une fois par commande. Elle décide toujours elle-même.
 
 ## Annulation
-- Un dossier peut être annulé tant qu’il n’est pas clos.
+- Un retour, un échange ou un remboursement peut être annulé tant que son dossier n’est pas clos. Une question transmise à la boutique ne s’annule pas.
 - L’annulation d’une commande, le changement d’adresse et toute autre demande sont traités par la boutique.
 
 ## Livraison
