@@ -40,6 +40,7 @@ MAX_TOKENS = 60000  # for one customer message
 MAX_PROPOSALS = 5  # in one summary
 MAX_REJECTED = 2  # answers guard may refuse for one customer message
 HISTORY = 40  # messages the model sees
+ASK = "Confirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
 
 
 @dataclass
@@ -79,6 +80,9 @@ qu’il veut, propose-le sans redemander.
 - Un motif évident suffit. Demande-le seulement s’il est inconnu.
 
 Actions :
+- N’appelle propose_return, propose_exchange, propose_refund ou cancel_case que si le client a demandé cette action ou dit \
+que quelque chose ne va pas. Une question (« où est mon colis ? ») n’est pas une demande : réponds-y, dis ce que la \
+politique permet, et demande s’il le souhaite avant d’appeler l’outil.
 - propose_return, propose_exchange, propose_refund et cancel_case affichent eux-mêmes un récapitulatif au client et \
 recueillent son accord : ne demande pas de confirmation avant, appelle l’outil.
 - Le résultat de l’outil dit ce qui a vraiment été fait. Ne dis jamais qu’une action est faite ou acceptée sans ce résultat, et ne promets rien de plus : ni étiquette, ni mail, ni délai qu’il ne mentionne pas.
@@ -181,7 +185,7 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
         """Waits for the customer's agreement. Anything but a plain yes goes back to the agent."""
         proposals = state["proposals"]
         summary = "\n\n".join(proposal["summary"] for proposal in proposals if proposal["summary"])
-        recap = f"{summary}\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
+        recap = f"{summary}\n\n{ASK}"
         reply = interrupt({"question": recap, "kind": "confirm"}, response_schema=CustomerReply)
         budget = {"steps": 0, "tokens": 0, "rejected": []}  # a new customer message
         if confirms(reply["message"], summary):

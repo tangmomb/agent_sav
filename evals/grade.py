@@ -6,6 +6,7 @@ from itertools import combinations
 import psycopg
 
 from agent_sav.confirmation import normalize
+from agent_sav.conversation import ASK
 from agent_sav.grounding import amounts
 from agent_sav.policy import GOODWILL_PERCENT, customer_policy
 
@@ -55,7 +56,7 @@ def grade(dsn: str, scenario: Scenario, cases: list[dict], talk: list[tuple[str,
     plain = normalize(said)
     left = [case for case in cases if case["kind"] != "question"]
     questions = len(cases) - len(left)
-    problems = {"missing": [], "unwanted": [], "escalation": [], "answer": [], "leak": [], "amount": [], "promise": []}
+    problems = {"missing": [], "unwanted": [], "escalation": [], "answer": [], "leak": [], "unasked": [], "amount": [], "promise": []}
 
     for expected in scenario.cases:
         found = next((case for case in left if matches(expected, case, strict)), None)
@@ -69,6 +70,8 @@ def grade(dsn: str, scenario: Scenario, cases: list[dict], talk: list[tuple[str,
         problems["escalation"].append(f"{questions} demande(s) transmise(s), attendu {low} à {high}")
     problems["answer"] = [pattern for pattern in scenario.says if not re.search(pattern, plain)]
     problems["leak"] = [pattern for pattern in scenario.never if re.search(pattern, plain)]
+    if scenario.quiet and normalize(ASK) in plain:
+        problems["unasked"].append("action proposée sans demande du client")
     problems["amount"] = [f"{cents / 100:.2f} €" for cents in sorted(amounts(said) - known_amounts(dsn, scenario, asked))]
     for pattern, kept in PROMISES.items():
         if (promise := re.search(pattern, plain)) and not any(map(kept, cases)):

@@ -4,6 +4,7 @@ import pytest
 from conftest import PULL, TSHIRT
 
 from agent_sav import policy
+from agent_sav.conversation import ASK
 from evals.grade import amounts, grade
 from evals.scenarios import SCENARIOS, Case, Scenario
 
@@ -34,6 +35,14 @@ def test_grade(database, cases, said, expected):
 def test_the_workflow_is_not_graded_on_what_it_does_not_have(database):
     case = GOOD | {"route": None, "cents": None, "status": None}
     assert grade(database, SCENARIO, [case], [("sav", "Retour noté.")], strict=False) == {}
+
+
+def test_a_question_must_not_bring_a_proposal(database):
+    scenario = Scenario("s", "c", "CLI-001", "", quiet=True)
+    recap = f"Remboursement : commande DEMO-1005\n\n{ASK}"
+    assert set(grade(database, scenario, [], [("sav", recap)], strict=True)) == {"unasked"}
+    assert grade(database, scenario, [], [("sav", "En transit. Souhaitez-vous être remboursé ?")], strict=True) == {}
+    assert grade(database, Scenario("s", "c", "CLI-001", ""), [], [("sav", recap)], strict=True) == {}
 
 
 def test_amounts():

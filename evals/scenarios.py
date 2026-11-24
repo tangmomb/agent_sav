@@ -27,6 +27,7 @@ class Scenario:
     questions: tuple[int, int] = (0, 0)  # how many requests may go to the shop's team
     says: tuple[str, ...] = ()
     never: tuple[str, ...] = ()
+    quiet: bool = False  # the customer only asks: no action may be proposed to them
     prior: tuple[tuple[str, dict], ...] = ()  # cases opened before the chat (agent only)
     failures: tuple[int, ...] = ()  # model calls that fail, counted from 1 (agent only)
     agent_only: bool = field(default=False)
@@ -63,6 +64,11 @@ SCENARIOS = [
     S("stock-pull", "information", "CLI-001", "Tu demandes si le pull en laine que tu as acheté existe en noir taille M. Tu veux juste savoir, tu ne veux pas l’échanger.", says=(r"noir",)),
     S("cartes-cadeaux", "information", "CLI-002", "Tu demandes si la boutique vend des cartes cadeaux, et tu veux une réponse de l’équipe si l’assistant ne sait pas.", questions=(1, 1)),
     S("humain", "information", "CLI-004", "Tu veux parler à un conseiller humain au sujet d’une facture pour ton employeur. Tu ne veux pas d’autre aide.", questions=(1, 1)),
+    # A lost parcel the customer only asks about. The workflow could not refund: these would say nothing of it.
+    S("suivi-perdu", "information", "CLI-001", "Tu demandes où est ton écharpe. Tu veux seulement le savoir : le statut donné te suffit.", questions=(0, 1), says=(r"transit|en cours de livraison|en route|achemin|perdu",), quiet=True, agent_only=True),
+    S("suivi-perdu-cher", "information", "CLI-005", "Tu demandes où est ton blouson. Tu veux seulement le savoir : le statut donné te suffit.", questions=(0, 1), says=(r"transit|en cours de livraison|en route|achemin|perdu",), quiet=True, agent_only=True),
+    S("suivi-tout", "information", "CLI-001", "Tu demandes où en sont tes commandes. Tu veux seulement le savoir : le statut donné te suffit.", questions=(0, 1), says=(r"transit|en cours de livraison|en route|achemin|perdu",), quiet=True, agent_only=True),
+    S("suivi-puis-remboursement", "multiple", "CLI-001", "Tu demandes où est ton écharpe. Une fois que tu le sais, tu demandes à être remboursé.", (money(1005, 4200, "auto"),), agent_only=True),
     # Returns.
     S("retour-simple", "retour", "CLI-002", "Tu veux retourner ta chemise Oxford : elle ne te plaît pas.", (back(1006, route="auto"),)),
     S("retour-cherche", "retour", "CLI-001", "Tu veux retourner un article. Tu ne dis lequel (la jupe) que si on te le demande. Motif : elle ne te plaît pas.", (back(1001, 3, "auto"),)),
@@ -126,4 +132,4 @@ SCENARIOS = [
       failures=(1, 2, 3, 4, 6, 8), agent_only=True),
 ]
 
-assert len({scenario.id for scenario in SCENARIOS}) == len(SCENARIOS) == 60, len(SCENARIOS)
+assert len({scenario.id for scenario in SCENARIOS}) == len(SCENARIOS) == 64, len(SCENARIOS)

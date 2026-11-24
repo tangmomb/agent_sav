@@ -39,7 +39,7 @@ exécutent vraiment.
 
 ## Évaluation
 
-60 scénarios joués par un client simulé, notés sans LLM sur l'état final de la base. La référence est la version précédente,
+64 scénarios joués par un client simulé, notés sans LLM sur l'état final de la base. La référence est la version précédente,
 un workflow où le LLM ne faisait qu'extraire des champs (tag `workflow-v1`).
 
 | 56 scénarios communs, 1 essai chacun | Agent | Workflow |
@@ -99,3 +99,6 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
 ```
 
 `deploy/.env` contient `SAV_DB_PASSWORD` et `MISTRAL_API_KEY` ; [deploy/Caddyfile](deploy/Caddyfile) publie le site.
+
+Chaque commit de `main` dont la CI réussit est mis en ligne sur https://agent-sav.tanguym.fr par
+[deploy/deploy.sh](deploy/deploy.sh), qui remet la version précédente si la nouvelle ne démarre pas.
