@@ -179,6 +179,7 @@ def summary(results: list[dict]) -> dict[str, str]:
         "Essais avec escalade inattendue": str(having("escalation")),
         "Essais avec réponse absente": str(having("answer")),
         "Essais avec fuite": str(having("leak")),
+        "Essais avec proposition non demandée": str(having("unasked")),
         "Essais avec montant inventé": str(having("amount")),
         "Essais avec fausse promesse": str(having("promise")),
         "Tours de chat (moyenne)": f"{statistics.mean(each['turns'] for each in played):.1f}",

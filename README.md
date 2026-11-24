@@ -39,7 +39,7 @@ exécutent vraiment.
 
 ## Évaluation
 
-60 scénarios joués par un client simulé, notés sans LLM sur l'état final de la base. La référence est la version précédente,
+64 scénarios joués par un client simulé, notés sans LLM sur l'état final de la base. La référence est la version précédente,
 un workflow où le LLM ne faisait qu'extraire des champs (tag `workflow-v1`).
 
 | 56 scénarios communs, 1 essai chacun | Agent | Workflow |
