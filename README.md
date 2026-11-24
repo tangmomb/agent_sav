@@ -33,9 +33,9 @@ Le graphe complet : [pipeline_ecommerce.mmd](pipeline_ecommerce.mmd).
 ## Explorateur de graphes
 
 `/graphs` montre ce que LangGraph Studio ne montre pas : l'état partagé, ce que chaque nœud lit et produit (dans le schéma ou
-non), par où on en sort et à quelle condition, et ce qu'il fait en base, requête par requête. Tout est
+non), par où on en sort et à quelle condition, ce qu'il fait en base, requête par requête, et le prompt complet de l'agent. Tout est
 [extrait du code](agent_sav/graph_map.py) ; des tests comparent le résultat aux graphes compilés et à ce que les nœuds
-exécutent vraiment.
+exécutent vraiment. Les exemples viennent d'une vraie exécution (`python -m evals examples`, appels payants : de l'ordre d'un centime).
 
 ## Évaluation
 

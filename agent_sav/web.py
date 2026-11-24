@@ -14,6 +14,7 @@ from . import pages
 from .alerts import alert_operator
 from .database import initialize_database
 from .graph_map import graph_map
+from .graph_watch import Unreadable, Watch
 from .sandboxes import BudgetSpent, Full, Limit, Sandboxes
 from .service import Support, UnknownChat
 
@@ -65,7 +66,7 @@ def serve(dsn: str, port: int, support: Support | None = None, *, host: str = "1
         raise ValueError("Une boutique partagée ne s’ouvre qu’à cette machine : utilisez --public.")
     shared = support or Support(dsn)
     initialize_database(dsn)
-    stopped = Event()
+    stopped, watch = Event(), Watch()
     messages, shops = Limit(MESSAGES_PER_HOUR, 3600), Limit(SHOPS_PER_DAY, 86400)
 
     def keep_time() -> None:
@@ -135,6 +136,8 @@ def serve(dsn: str, port: int, support: Support | None = None, *, host: str = "1
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("X-Content-Type-Options", "nosniff")
+            if not sandboxes:
+                self.send_header("Cache-Control", "no-cache")
             self.send_header("Referrer-Policy", "same-origin")
             self.send_header("X-Frame-Options", "SAMEORIGIN")
             self.end_headers()
@@ -180,7 +183,13 @@ def serve(dsn: str, port: int, support: Support | None = None, *, host: str = "1
                 self.reply(HTTPStatus.OK, path.read_bytes(), content_type)
                 return
             if route == "/api/graphs":  # about the code, not about anyone's shop
-                self.send_json(HTTPStatus.OK, graph_map())
+                try:
+                    self.send_json(HTTPStatus.OK, graph_map() if sandboxes else watch.graphs())
+                except Unreadable as error:
+                    self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+                return
+            if route == "/api/graphs/version" and not sandboxes:  # hot reload
+                self.send_json(HTTPStatus.OK, watch.version())
                 return
             customer = re.fullmatch(r"/api/customers/(CLI-[0-9]{3})/orders", route)
             try:

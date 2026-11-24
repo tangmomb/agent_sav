@@ -4,6 +4,7 @@
     python -m evals run --system workflow --trials 5
     python -m evals run --only retour-simple,pannes --trials 1
     python -m evals report
+    python -m evals examples
 """
 
 import argparse
@@ -27,6 +28,7 @@ from psycopg.conninfo import make_conninfo
 from agent_sav.model import DEADLINE, MODEL, UnusableAnswer, is_transient, visible_text, within
 from agent_sav.shop import DEFAULT_DSN
 
+from .examples import record
 from .grade import grade
 from .scenarios import SCENARIOS, Scenario
 from .systems import BASELINE_TAG, SYSTEMS, Failed, Workflow
@@ -238,6 +240,7 @@ def main() -> None:
     runner.add_argument("--workers", type=int, default=4)
     runner.add_argument("--only", help="Identifiants de scénarios, séparés par des virgules")
     commands.add_parser("report")
+    commands.add_parser("examples", help="Enregistre les exemples de l’explorateur de graphes")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     load_dotenv()
@@ -247,7 +250,11 @@ def main() -> None:
     elif not os.getenv("MISTRAL_API_KEY"):
         raise SystemExit("MISTRAL_API_KEY est absente.")
     else:
-        run(args, os.getenv("SAV_EVAL_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN)
+        dsn = os.getenv("SAV_EVAL_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DSN
+        if args.command == "examples":
+            record(dsn)
+        else:
+            run(args, dsn)
 
 
 if __name__ == "__main__":

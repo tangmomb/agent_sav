@@ -271,45 +271,111 @@ function nodePanel(graph, node, focus) {
     el("p", {class: "place"}, node.place),
     el("p", {class: "role"}, node.role),
     el("div", {class: "badges"}, chips(...badges)),
+    ...(node.model ? promptSection(node.model) : []),
     ...section("Ce qu’il lit dans l’état", node.reads.length
       ? chips(...node.reads.map((key) => chip(key, "read", `key/${graph}/${key}`)))
       : el("p", {class: "muted"}, "Rien.")),
     ...producedSection(graph, node, schema),
+    ...nodeExamples(graph, node),
     ...exitsSection(graph, node, focus),
     ...sqlSection(node),
     ...section("Code", source("Voir la fonction", node.code)),
   ];
 }
 
+// A text of the code, with its variables standing out.
+function templated(text) {
+  return text.split(/(\{[^{}]+\})/).map((part) => /^\{.+\}$/.test(part) ? el("mark", {}, part) : part);
+}
+
+// JSON as it is sent, with its keys and texts told apart.
+function json(value) {
+  const parts = JSON.stringify(value, null, 2).split(/("(?:[^"\\]|\\.)*")(\s*:)?/);
+  const shown = [];
+  for (let i = 0; i < parts.length; i += 3) {
+    shown.push(parts[i]);
+    if (parts[i + 1]) shown.push(el("span", {class: parts[i + 2] ? "json-key" : "json-text"}, parts[i + 1]), parts[i + 2] ?? "");
+  }
+  return el("pre", {class: "json"}, ...shown);
+}
+
+function promptSection(sent) {
+  const copy = el("button", {type: "button", class: "chip", onclick: async () => {
+    try {
+      await navigator.clipboard.writeText(sent.instructions);
+      copy.textContent = "Copié";
+    } catch {
+      copy.textContent = "Copie refusée";
+    }
+  }}, "Copier");
+  return section("Ce qu’il envoie au modèle",
+    el("div", {class: "status"}, chip(sent.name, "model"), el("span", {class: "muted"}, "réglable par SAV_MODEL")),
+    el("h4", {}, "1. Message système"),
+    el("div", {class: "status"}, el("span", {class: "place"}, sent.place), copy),
+    el("pre", {class: "prompt"}, ...templated(sent.instructions)),
+    ...sent.additions.map((each) => el("div", {class: "card"}, el("p", {}, "Ajouté à la fin"), conditions(each.when),
+      el("pre", {}, ...templated(each.text.trim())))),
+    el("h4", {}, "2. Messages du chat"),
+    el("div", {class: "card"}, el("code", {}, sent.messages),
+      el("p", {class: "muted"}, `Les ${sent.history} derniers au plus, à partir d’un message du client.`)),
+    el("h4", {}, `3. Outils (${sent.tools.length})`),
+    ...sent.tools.map((tool) => el("details", {class: "card sql"},
+      el("summary", {}, el("span", {class: `op ${tool.reads ? "read" : "write"}`}, tool.reads ? "LECTURE" : "ACTION"), el("code", {}, tool.name)),
+      json(tool.sent))),
+    el("h4", {}, "4. Réglages de l’appel"),
+    el("div", {class: "card"}, ...sent.settings.map((each) => el("div", {class: "pair"}, chip(each.name), el("code", {}, each.value)))));
+}
+
+// One value for each key, kept from a real run. Of several, the one that shows the most.
+function exampleSection(list) {
+  const best = new Map();
+  for (const {name, kind, to, recorded} of list) {
+    const shown = recorded ? JSON.stringify(recorded.value, null, 2) : "";
+    const before = best.get(`${kind}/${name}`);
+    if (!before || shown.length > before.shown.length) best.set(`${kind}/${name}`, {name, kind, to, shown});
+  }
+  if (!best.size) return [];
+  return section("Exemple", el("div", {class: "card examples"}, ...[...best.values()].map(({name, kind, to, shown}) =>
+    el("div", {class: shown.length < 12 ? "example short" : "example"}, chip(name, kind, to),
+      shown ? el("pre", {}, shown) : el("p", {class: "muted"}, "Aucun enregistré pour cette version du code.")))));
+}
+
+function nodeExamples(graph, node) {
+  const parts = (value) => Object.entries(value ?? {}).map(([name, each]) => ({name, kind: "other", recorded: {value: each}}));
+  return exampleSection([
+    ...node.updates.flatMap((update) => update.keys.map((key) => ({name: key.key, recorded: key.example,
+      ...(key.declared ? {kind: "state", to: `key/${graph}/${key.key}`} : {kind: "other"})}))),
+    ...parts(node.pause?.example), ...parts(node.artifact_example),
+  ]);
+}
+
+// Every key a node produces. Those of the state stand out; the others never reach the shared schema.
 function producedSection(graph, node, schema) {
-  const some = node.updates.filter((update) => update.keys.length);
-  const cards = some.map((update) => el("div", {class: "card"},
+  const other = (name) => chip(name, "other");
+  const cards = node.updates.filter((update) => update.keys.length).map((update) => el("div", {class: "card"},
     conditions(update.when),
     ...update.keys.map((key) => el("div", {class: "pair"},
-      key.declared ? chip(key.key, "write", `key/${graph}/${key.key}`) : chip(key.key, "danger"),
-      el("code", {}, key.value),
-      !key.declared && el("p", {class: "inner"}, "Hors du schéma : LangGraph ignore cette clé."),
+      key.declared ? chip(key.key, "state", `key/${graph}/${key.key}`) : other(key.key),
+      el("code", {}, `= ${key.value}`),
+      !key.declared && el("p", {class: "inner"}, "Absente du schéma : LangGraph ignore cette clé."),
       schema[key.key]?.reducer && el("p", {class: "inner"}, `Fusionnée par ${schema[key.key].reducer}.`),
       key.messages.length > 0 && el("p", {class: "inner"}, `Messages : ${key.messages.join(", ")}`),
-      key.inner.length > 0 && el("p", {class: "inner"}, `Contient, sans que le schéma le déclare : ${key.inner.join(", ")}`),
-    ))));
-  const outside = [];
+      key.inner.length > 0 && el("div", {class: "inner chips"}, el("span", {}, "sous-clés"), ...key.inner.map(other))))));
   if (node.pause) {
-    outside.push(el("div", {class: "card"},
-      el("p", {}, "La pause montre :"),
-      ...node.pause.payload.map((each) => el("div", {class: "pair"}, chip(each.key, "pause"), el("code", {}, each.value))),
-      el("p", {}, "et attend, pour reprendre, un ", el("code", {}, node.pause.schema), " :"),
+    cards.push(el("div", {class: "card"},
+      el("p", {class: "muted"}, "Dans l’interrupt"),
+      ...node.pause.payload.map((each) => el("div", {class: "pair"}, other(each.key), el("code", {}, `= ${each.value}`))),
+      el("p", {class: "muted"}, "Attendu pour reprendre, reçu et non produit : ", el("code", {}, node.pause.schema)),
       ...node.pause.fields.map((each) => el("div", {class: "pair"}, chip(each.name, "pause"), el("code", {}, each.type)))));
   }
   if (node.artifacts.length) {
-    outside.push(el("div", {class: "card"}, el("p", {}, "Dans l’artifact des ToolMessage, que le modèle ne voit pas :"),
-      chips(...node.artifacts.map((each) => chip(each)))));
+    cards.push(el("div", {class: "card"}, el("p", {class: "muted"}, "Dans l’artifact des ToolMessage, que le modèle ne voit pas"),
+      chips(...node.artifacts.map((each) => other(each.startsWith("…") ? `tout ${each.slice(1)}` : each)))));
   }
-  return [
-    ...section("Ce qu’il produit dans l’état", ...(cards.length ? cards : [
-      el("p", {class: "muted"}, node.updates.length ? "Aucune clé : il n’agit que hors de l’état." : "Rien.")])),
-    ...(outside.length ? [el("h4", {}, "Hors du schéma d’état"), ...outside] : []),
-  ];
+  return section("Clés produites par le nœud", ...(cards.length
+    ? [el("div", {class: "chips key-legend"}, chip("clé", "state"), el("span", {class: "muted"}, "du state"),
+      other("clé"), el("span", {class: "muted"}, "hors du state")), ...cards]
+    : [el("p", {class: "muted"}, "Aucune.")]));
 }
 
 function exitsSection(graph, node, focus) {
@@ -407,9 +473,10 @@ function keyPanel(graph, key) {
       ? `Chaque écriture est fusionnée par ${key.reducer}.` : "Chaque écriture remplace la valeur.")),
     ...section("Produite par", users(list.filter((each) => each.kind === "writes")),
       graphs[graph].input.keys.includes(key.name) && el("p", {class: "muted"}, "Donnée aussi à l’entrée du graphe."),
-      ...values.map(({node, update, each}) => el("div", {class: "card"}, el("div", {class: "pair"}, chip(node.id, "write", `node/${graph}/${node.id}`), el("code", {}, each.value),
+      ...values.map(({node, update, each}) => el("div", {class: "card"}, el("div", {class: "pair"}, chip(node.id, "write", `node/${graph}/${node.id}`), el("code", {}, `= ${each.value}`),
         each.messages.length > 0 && el("p", {class: "inner"}, `Messages : ${each.messages.join(", ")}`),
-        each.inner.length > 0 && el("p", {class: "inner"}, `Contient : ${each.inner.join(", ")}`)), conditions(update.when)))),
+        each.inner.length > 0 && el("p", {class: "inner"}, `Sous-clés : ${each.inner.join(", ")}`)), conditions(update.when)))),
+    ...exampleSection(values.map(({each}) => ({name: key.name, kind: "state", recorded: each.example}))),
     ...section("Lue par", users(list.filter((each) => each.kind === "reads"))),
   ];
 }
@@ -500,19 +567,108 @@ function showView(view) {
   if (VIEWS[view]) svg.setAttribute("viewBox", VIEWS[view]);
 }
 
-try {
+// Reading the graphs, and reading them again when the code changes.
+
+const live = document.querySelector("#live");
+const problem = document.querySelector("#problem");
+const currentView = () => stage.dataset.view ?? "all";
+
+function remember() {
+  return {view: currentView(), panel: panel.scrollTop, x: stage.scrollLeft, y: stage.scrollTop,
+    open: [...panel.querySelectorAll("details[open] > summary")].map((each) => each.textContent)};
+}
+
+function recall(place) {
+  showView(place.view);
+  show();
+  for (const summary of panel.querySelectorAll("details > summary")) summary.parentElement.open = place.open.includes(summary.textContent);
+  panel.scrollTop = place.panel;
+  stage.scrollTo(place.x, place.y);
+}
+
+async function read() {
   const response = await fetch("/api/graphs");
-  if (!response.ok) throw new Error(response.statusText);
-  data = await response.json();
+  const result = await response.json();
+  if (!response.ok) throw Object.assign(new Error(result.error), {explained: true});
+  const place = remember();
+  data = result;
   graphs = Object.fromEntries(data.graphs.map((graph) => [graph.id, graph]));
   drawAll();
   drawMatrix();
-  for (const button of document.querySelectorAll("button[data-view]")) button.addEventListener("click", () => showView(button.dataset.view));
-  document.querySelector("#home").addEventListener("click", () => go(""));
-  addEventListener("hashchange", show);
-  addEventListener("keydown", (event) => event.key === "Escape" && go(""));
-  show();
-} catch (error) {
-  panel.replaceChildren(el("p", {}, "Les graphes n’ont pas pu être lus. Rechargez la page une fois le serveur démarré."));
-  throw error;
+  recall(place);
 }
+
+function explain(error) {
+  problem.textContent = error ? `Le code ne peut pas être lu. La page montre la dernière version lisible.\n${error.message}` : "";
+  problem.hidden = !error;
+}
+
+function tell(text, stale = false) {
+  live.hidden = false;
+  live.textContent = text;
+  live.classList.toggle("stale", stale);
+}
+
+async function follow() {
+  let known;
+  const wait = () => new Promise((resolve) => setTimeout(resolve, 1000));
+  for (;; await wait()) {
+    if (document.hidden) continue;
+    let version;
+    try {
+      const response = await fetch("/api/graphs/version");
+      if ([401, 404].includes(response.status)) return; // the public demo does not change
+      version = await response.json();
+    } catch {
+      tell("Serveur arrêté", true);
+      continue;
+    }
+    known ??= version;
+    if (version.page !== known.page) {
+      try {
+        sessionStorage.setItem("graphs-place", JSON.stringify(remember()));
+      } catch { /* the place is only a convenience */ }
+      location.reload();
+      return;
+    }
+    if (version.style !== known.style) {
+      for (const sheet of document.querySelectorAll('link[rel="stylesheet"]')) sheet.href = `${sheet.href.split("?")[0]}?${version.style}`;
+    }
+    const changed = version.code !== known.code;
+    known = version;
+    if (changed || !data) {
+      tell("Lecture du code…");
+      try {
+        await read();
+        explain(null);
+        tell(`À jour · ${new Date().toLocaleTimeString("fr")}`);
+      } catch (error) {
+        if (!error.explained) known = {...version, code: ""}; // the server may be restarting: try again
+        explain(error);
+        tell("Code illisible", true);
+      }
+    } else if (problem.hidden && live.classList.contains("stale") || live.hidden) {
+      tell("En direct");
+    }
+  }
+}
+
+for (const button of document.querySelectorAll("button[data-view]")) button.addEventListener("click", () => showView(button.dataset.view));
+document.querySelector("#home").addEventListener("click", () => go(""));
+// A click on nothing in the graphs goes back to the schemas.
+stage.addEventListener("click", (event) => {
+  if (data && location.hash && !event.target.closest(".node:not(.end), .table, .edge-hit, #matrix, .legend")) go("");
+});
+addEventListener("hashchange", () => data && show());
+addEventListener("keydown", (event) => event.key === "Escape" && data && go(""));
+
+try {
+  await read();
+  const place = sessionStorage.getItem("graphs-place");
+  sessionStorage.removeItem("graphs-place");
+  if (place) recall(JSON.parse(place));
+} catch (error) {
+  if (!data) panel.replaceChildren(el("p", {}, "Les graphes n’ont pas pu être lus."));
+  if (error.explained) explain(error);
+}
+follow();

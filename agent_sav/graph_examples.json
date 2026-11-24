@@ -1,0 +1,329 @@
+{
+ "case": {
+  "await_parcel": {
+   "payload": {
+    "waiting_for": "parcel",
+    "accepts": [
+     "received",
+     "remind",
+     "expire",
+     "cancel"
+    ]
+   },
+   "updates": [
+    {
+     "keys": [
+      "command",
+      "last_command"
+     ],
+     "values": {
+      "command": {
+       "kind": "expire",
+       "payload": {},
+       "id": 6
+      },
+      "last_command": 6
+     }
+    }
+   ]
+  },
+  "intake": {
+   "updates": [
+    {
+     "keys": [
+      "last_command"
+     ],
+     "values": {
+      "last_command": 0
+     }
+    }
+   ]
+  },
+  "shop_review": {
+   "payload": {
+    "waiting_for": "shop",
+    "accepts": [
+     "answer"
+    ]
+   },
+   "updates": [
+    {
+     "keys": [
+      "command",
+      "last_command"
+     ],
+     "values": {
+      "command": {
+       "kind": "reject",
+       "payload": {
+        "reason": "La photo ne montre pas de défaut."
+       },
+       "id": 5
+      },
+      "last_command": 5
+     }
+    }
+   ]
+  }
+ },
+ "conversation": {
+  "agent": {
+   "updates": [
+    {
+     "keys": [
+      "messages",
+      "steps",
+      "tokens"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "ai",
+        "content": "",
+        "tool_calls": [
+         {
+          "name": "propose_exchange",
+          "args": {
+           "details": "La jupe est trop grande, elle souhaite un échange contre un S",
+           "item_id": "ITEM-DEMO-1001-3",
+           "reason": "wrong_size",
+           "size": "S"
+          },
+          "id": "chatcmpl-tool-801366be7c170fa4"
+         }
+        ],
+        "usage_metadata": {
+         "input_tokens": 4176,
+         "output_tokens": 55,
+         "total_tokens": 4231
+        }
+       }
+      ],
+      "steps": 2,
+      "tokens": 8269
+     }
+    }
+   ]
+  },
+  "apply": {
+   "artifact": {
+    "done": true,
+    "reply": "oui",
+    "reply_id": "d0c210da-83b4-4d6e-8b2b-c6490c0c85e8",
+    "recap": "Annulation du dossier SAV-13D5C364 (échange)"
+   },
+   "updates": [
+    {
+     "keys": [
+      "messages",
+      "proposals",
+      "reply"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "tool",
+        "content": "Le client a confirmé. Dossier SAV-990499AF accepté. Remboursement envoyé. Montant : 42,00 €.",
+        "name": "propose_refund",
+        "tool_call_id": "chatcmpl-tool-8db44216f5d85cd4",
+        "artifact": {
+         "done": true,
+         "reply": "oui",
+         "reply_id": "25ac14bd-1719-4598-b175-6efe10e8bebf",
+         "recap": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate"
+        }
+       }
+      ],
+      "proposals": [],
+      "reply": null
+     }
+    }
+   ]
+  },
+  "confirm": {
+   "artifact": {
+    "recap": "Retour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)\nRemboursement : 89,00 €, à réception du colis\nAcceptation : soumise à la boutique\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
+   },
+   "payload": {
+    "question": "Annulation du dossier SAV-13D5C364 (échange)\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer.",
+    "kind": "confirm"
+   },
+   "updates": [
+    {
+     "keys": [
+      "messages",
+      "proposals",
+      "rejected",
+      "steps",
+      "tokens"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "tool",
+        "content": "Récapitulatif montré au client :\nRetour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)\nRemboursement : 89,00 €, à réception du colis\nAcceptation : soumise à la boutique\nIl n’a pas confirmé : rien n’a été enregistré. Sa répon…",
+        "name": "propose_return",
+        "tool_call_id": "chatcmpl-tool-94a8a6506ea26085",
+        "artifact": {
+         "recap": "Retour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)\nRemboursement : 89,00 €, à réception du colis\nAcceptation : soumise à la boutique\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
+        }
+       },
+       {
+        "type": "human",
+        "content": "Attendez, pouvez-vous ajouter aussi mon écharpe ? Elle n’est jamais arrivée, je veux être remboursé.",
+        "id": "3cb9570b-1c15-4a29-8fad-26261488ccc9"
+       }
+      ],
+      "proposals": [],
+      "rejected": [],
+      "steps": 0,
+      "tokens": 0
+     }
+    },
+    {
+     "keys": [
+      "rejected",
+      "reply",
+      "steps",
+      "tokens"
+     ],
+     "values": {
+      "rejected": [],
+      "reply": {
+       "reply": "oui",
+       "reply_id": "d0c210da-83b4-4d6e-8b2b-c6490c0c85e8",
+       "recap": "Annulation du dossier SAV-13D5C364 (échange)"
+      },
+      "steps": 0,
+      "tokens": 0
+     }
+    }
+   ]
+  },
+  "give_up": {
+   "updates": [
+    {
+     "keys": [
+      "messages"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "ai",
+        "content": "Je préfère confier votre demande à la boutique (dossier SAV-5A05EABA). Elle vous répondra par mail."
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "guard": {
+   "updates": [
+    {
+     "keys": [
+      "messages",
+      "rejected",
+      "taken_back"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "remove",
+        "id": "61dd53d9-e20c-4a43-81a6-f2120010a2d9"
+       }
+      ],
+      "rejected": [
+       "pourcentage absent des outils : 15"
+      ],
+      "taken_back": [
+       {
+        "after": "95538d34-2e7d-440e-a289-37f4f79ab816",
+        "text": "Voici plutôt une remise de 20 %.",
+        "problem": "pourcentage absent des outils : 20"
+       }
+      ]
+     }
+    },
+    {
+     "keys": [
+      "rejected"
+     ],
+     "values": {
+      "rejected": []
+     }
+    }
+   ]
+  },
+  "policy": {
+   "updates": [
+    {
+     "keys": [
+      "messages",
+      "proposals"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "tool",
+        "content": "Refusé par les règles (goodwill_limit). Un geste commercial va jusqu’à 37,40 € pour cette commande.",
+        "name": "propose_refund",
+        "tool_call_id": "chatcmpl-tool-a04fb5314085430e"
+       }
+      ],
+      "proposals": [
+       {
+        "call": {
+         "id": "chatcmpl-tool-801366be7c170fa4",
+         "name": "propose_exchange"
+        },
+        "args": {
+         "item_id": "ITEM-DEMO-1001-3",
+         "size": "S",
+         "color": null,
+         "reason": "wrong_size",
+         "details": "La jupe est trop grande, elle souhaite un échange contre un S"
+        },
+        "summary": "Échange : Jupe en denim (Bleu brut · M, commande DEMO-1001)\nContre : Bleu brut · S\nAcceptation : immédiate"
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "tools": {
+   "updates": [
+    {
+     "keys": [
+      "messages",
+      "proposals"
+     ],
+     "values": {
+      "messages": [
+       {
+        "type": "tool",
+        "content": "# Politique SAV de Maison Orme\n\n## Retours\n- Un article livré peut être retourné dans les 30 jours suivant la livraison.\n- Entre 30 et 45 jours, la boutique décide au cas par cas. Au-delà, le retour est refusé.\n- Le remboursement est du pr…",
+        "name": "read_policy",
+        "tool_call_id": "chatcmpl-tool-a8fd7ed42b4525e4"
+       }
+      ],
+      "proposals": [
+       {
+        "call": {
+         "id": "chatcmpl-tool-801366be7c170fa4",
+         "name": "propose_exchange"
+        },
+        "args": {
+         "item_id": "ITEM-DEMO-1001-3",
+         "size": "S",
+         "color": null,
+         "reason": "wrong_size",
+         "details": "La jupe est trop grande, elle souhaite un échange contre un S"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

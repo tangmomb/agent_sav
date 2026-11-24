@@ -69,6 +69,7 @@ def test_nothing_is_shown_before_a_shop_is_opened(public):
     assert visitor.request("GET", "/chat.js")[0] == 200
     assert "Explorateur de graphes" in visitor.request("GET", "/graphs")[1]  # about the code, open to all
     assert {graph["id"] for graph in json.loads(visitor.request("GET", "/api/graphs")[1])["graphs"]} == {"conversation", "case"}
+    assert visitor.request("GET", "/api/graphs/version")[0] == 401  # no hot reload in public
     visitor.cookie = "sav_demo=forged"
     assert "Ouvrir ma boutique" in visitor.request("GET", "/shop/support")[1]
 
@@ -141,6 +142,7 @@ def test_limit():
 def test_a_shared_shop_only_serves_this_machine(serve):
     url = serve()
     assert Visitor(url).request("GET", "/shop/support")[0] == 200
+    assert set(json.loads(Visitor(url).request("GET", "/api/graphs/version")[1])) == {"code", "style", "page"}
     assert Visitor(url).request("GET", "/shop/support", Host="sav.example")[0] == 403
 
 

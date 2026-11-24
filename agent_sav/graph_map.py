@@ -7,6 +7,8 @@ a statement a node never reaches. It must not miss one: tests check it against w
 
 import ast
 import inspect
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from functools import cache
@@ -15,9 +17,9 @@ from types import ModuleType
 
 from langgraph.graph import END, START
 
-from . import case_graph, cases, conversation, graph_notes, shop, tools
+from . import case_graph, cases, conversation, graph_notes, model, shop, tools
 
-MODULES = {module.__name__.split(".")[-1]: module for module in (conversation, case_graph, cases, shop, tools)}
+MODULES = {module.__name__.split(".")[-1]: module for module in (conversation, case_graph, cases, shop, tools, model)}
 # What the names the code uses for its collaborators stand for.
 OBJECTS = {"cases": ("cases", "Cases"), "Cases": ("cases", "Cases"), "shop": ("shop", "Shop"), "Shop": ("shop", "Shop"),
            "toolbox": ("tools", "")}
@@ -380,7 +382,7 @@ def updates(source: Source, schema: set[str]) -> list[dict]:
     for node, conditions in inside(source):
         if isinstance(node, ast.Return) and node.value is not None:
             found.append({"when": kept(conditions, {}) or [], "keys": [{
-                "key": key, "value": text(value), "declared": key in schema, "inner": inner_keys(value, source),
+                "key": key, "value": text(value), "declared": key in schema, "inner": [] if key == "messages" else inner_keys(value, source),
                 "messages": message_kinds(value, source) if key == "messages" else [],
             } for key, value in entries(node.value, source)]})
     return found
@@ -426,6 +428,75 @@ def pause(source: Source, module: ModuleType) -> dict | None:
                 "schema": text(options["response_schema"]), "fields": class_fields(module, text(options["response_schema"])),
             }
     return None
+
+
+# Examples, kept from a real run (python -m evals examples).
+
+EXAMPLES = Path(__file__).parent / "graph_examples.json"
+
+
+def with_examples(graph: str, node: str, returned: list[dict], paused: dict | None, kept_artifacts: list[str]) -> dict:
+    """Puts next to each key a value it really had. None when no run returned these keys together."""
+    recorded = json.loads(EXAMPLES.read_text(encoding="utf-8")).get(graph, {}).get(node, {}) if EXAMPLES.exists() else {}
+    for update in returned:
+        names = sorted(key["key"] for key in update["keys"])
+        found = next((each["values"] for each in recorded.get("updates", []) if each["keys"] == names), {})
+        for key in update["keys"]:
+            key["example"] = {"value": found[key["key"]]} if key["key"] in found else None
+    if paused:
+        paused["example"] = recorded.get("payload")
+    return {"updates": returned, "pause": paused, "artifacts": kept_artifacts,
+            "artifact_example": recorded.get("artifact") if kept_artifacts else None}
+
+
+# What a node sends to the model.
+
+def template(expression: ast.expr) -> str:
+    """A text built in the code, with what is not constant in braces."""
+    if isinstance(expression, ast.BinOp) and isinstance(expression.op, ast.Add):
+        return template(expression.left) + template(expression.right)
+    if isinstance(expression, ast.Constant) and isinstance(expression.value, str):
+        return expression.value
+    return f"{{{text(expression)}}}"
+
+
+def call_settings() -> list[dict]:
+    """The options of the call to the model, but for the messages and the tools."""
+    source = functions()["model", "chat"]
+    found = []
+    for node, _ in inside(source):
+        if isinstance(node, ast.Call) and text(node.func) == "client.chat.complete":
+            for each in node.keywords:
+                if each.arg is None:
+                    found += [(key.value, value) for inner in ast.walk(each.value) if isinstance(inner, ast.Dict) and inner.keys
+                              for key, value in zip(inner.keys, inner.values)]
+                else:
+                    found.append((each.arg, each.value))
+        elif isinstance(node, ast.Call) and text(node.func) == "Mistral":
+            found += [(each.arg, each.value) for each in node.keywords if each.arg != "api_key"]
+    shown = [{"name": name, "value": text(value)} for name, value in found if name not in ("model", "messages", "tools")]
+    return [*shown, {"name": "DEADLINE", "value": f"{model.DEADLINE} s"}]
+
+
+def prompt(source: Source) -> dict | None:
+    """Everything a node gives the model: instructions, what is added to them, messages, tools and options."""
+    call = next((node for node, _ in inside(source) if isinstance(node, ast.Call) and text(node.func) == "model"), None)
+    if call is None:
+        return None
+    system, messages, _ = call.args
+    formatted = local_value(system, source)
+    definition = next(node for node in tree(source.module).body if isinstance(node, ast.Assign) and text(node.targets[0]) == text(formatted.func.value))
+    return {
+        "name": os.getenv("SAV_MODEL") or model.MODEL,
+        "instructions": getattr(MODULES[source.module], text(formatted.func.value)),
+        "place": f"agent_sav/{source.module}.py:{definition.lineno}",
+        "additions": [{"when": kept(conditions, {}) or [], "text": template(node.value)} for node, conditions in inside(source)
+                      if isinstance(node, ast.AugAssign) and text(node.target) == text(system)],
+        "messages": text(messages), "history": conversation.HISTORY,
+        "tools": [{"name": each["function"]["name"], "reads": each["function"]["name"] in tools.READ_TOOLS, "sent": each}
+                  for each in tools.schemas()],
+        "settings": call_settings(),
+    }
 
 
 # The graphs.
@@ -479,9 +550,8 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
             entry |= {
                 "role": graph_notes.ROLES[name].get(node, ""), "place": source.place,
                 "code": inspect.cleandoc(ast.unparse(source.node)),
-                "reads": state_reads(source), "updates": updates(source, keys), "artifacts": artifacts(source),
-                "pause": pause(source, module), "transitions": transitions(source), "model": short == "conversation" and any(
-                    isinstance(each, ast.Call) and text(each.func) == "model" for each, _ in inside(source)),
+                "reads": state_reads(source), "transitions": transitions(source), "model": prompt(source),
+                **with_examples(name, node, updates(source, keys), pause(source, module), artifacts(source)),
                 "sql": [each for each in sql if not any(
                     (node, f"{each['operation']} shop.{table}") in graph_notes.IMPOSSIBLE for table in each["writes"])],
                 "retry": policy and {"attempts": policy.max_attempts, "on": policy.retry_on.__name__},
@@ -536,3 +606,7 @@ def graph_map() -> dict:
         "tables": [table for table in tables() if table["name"] in used],
         "bridges": [dict(zip(("from_graph", "from", "table", "to_graph", "to", "note"), bridge)) for bridge in graph_notes.BRIDGES],
     }
+
+
+if __name__ == "__main__":
+    print(json.dumps(graph_map(), ensure_ascii=False))

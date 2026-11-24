@@ -51,7 +51,7 @@ jobs:
 
       - name: Syntaxe du JavaScript
         run: |
-          for file in agent_sav/boutique/*.js; do
+          for file in agent_sav/boutique/*.js interface/*.js; do
             cp "$file" /tmp/check.mjs && node --check /tmp/check.mjs
           done
 
