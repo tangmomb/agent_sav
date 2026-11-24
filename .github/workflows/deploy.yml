@@ -1,0 +1,40 @@
+# Met main en ligne sur le VPS quand la CI de ce commit a réussi. Le serveur fait le travail : deploy/deploy.sh.
+name: Déploiement
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+# Jamais interrompu : un déploiement plus récent attend la fin du précédent.
+concurrency:
+  group: deploiement
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    # push : une PR d'un fork peut aussi venir d'une branche nommée main.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://agent-sav.tanguym.fr
+    steps:
+      - name: Déployer
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KEY" | tr -d '\r' > ~/.ssh/deploy
+          echo "agent-sav.tanguym.fr ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICSqNA8RFI7eGXoQ2BEpK0qCrOlPDZeaMnldaGPBofo5" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            -o ConnectTimeout=20 -o ServerAliveInterval=30 ubuntu@agent-sav.tanguym.fr "$COMMIT"
+
+      - name: Vérifier le site
+        run: curl -fsS --retry 5 --retry-delay 5 --retry-all-errors -m 20 -o /dev/null https://agent-sav.tanguym.fr/

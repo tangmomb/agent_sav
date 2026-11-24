@@ -99,3 +99,6 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
 ```
 
 `deploy/.env` contient `SAV_DB_PASSWORD` et `MISTRAL_API_KEY` ; [deploy/Caddyfile](deploy/Caddyfile) publie le site.
+
+Chaque commit de `main` dont la CI réussit est mis en ligne sur https://agent-sav.tanguym.fr par
+[deploy/deploy.sh](deploy/deploy.sh), qui remet la version précédente si la nouvelle ne démarre pas.
