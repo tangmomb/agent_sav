@@ -1,5 +1,22 @@
 {
  "case": {
+  "answer": {
+   "read": {
+    "case_id": "SAV-7CF5EFA0",
+    "command": {
+     "kind": "answer",
+     "payload": {
+      "answer": "Oui, en boutique et sur le site, de 20 à 200 €."
+     },
+     "id": 2
+    }
+   }
+  },
+  "approve": {
+   "read": {
+    "case_id": "SAV-04001F7E"
+   }
+  },
   "await_parcel": {
    "payload": {
     "waiting_for": "parcel",
@@ -27,7 +44,20 @@
     }
    ]
   },
+  "cancel": {
+   "read": {
+    "case_id": "SAV-6DFA26C7"
+   }
+  },
+  "expire": {
+   "read": {
+    "case_id": "SAV-04001F7E"
+   }
+  },
   "intake": {
+   "read": {
+    "case_id": "SAV-F3258084"
+   },
    "updates": [
     {
      "keys": [
@@ -39,12 +69,39 @@
     }
    ]
   },
+  "reject": {
+   "read": {
+    "case_id": "SAV-F5A2A223",
+    "command": {
+     "kind": "reject",
+     "payload": {
+      "reason": "La photo ne montre pas de défaut."
+     },
+     "id": 5
+    }
+   }
+  },
+  "remind": {
+   "read": {
+    "case_id": "SAV-5F54B1D7"
+   }
+  },
+  "settle": {
+   "read": {
+    "case_id": "SAV-4A018869"
+   }
+  },
   "shop_review": {
    "payload": {
     "waiting_for": "shop",
     "accepts": [
-     "answer"
+     "approve",
+     "reject",
+     "cancel"
     ]
+   },
+   "read": {
+    "case_id": "SAV-F5A2A223"
    },
    "updates": [
     {
@@ -64,10 +121,43 @@
      }
     }
    ]
+  },
+  "submit": {
+   "read": {
+    "case_id": "SAV-F3258084"
+   }
   }
  },
  "conversation": {
   "agent": {
+   "read": {
+    "rejected": [],
+    "messages": [
+     "… et 3 avant",
+     {
+      "type": "tool",
+      "content": "# Politique SAV de Maison Orme\n\n## Retours\n- Un article livré peut être retourné dans les 30 jours suivant la livraison.\n- Entre 30 et 45 jours, la boutique décide au cas par cas. Au-delà, le retour est refusé.\n- Le remboursement est du pr…",
+      "name": "read_policy",
+      "tool_call_id": "chatcmpl-tool-acdc2e5d3d45d4fe"
+     },
+     {
+      "type": "ai",
+      "content": "Bonjour Camille.\n\nVotre dernière commande est la DEMO-1001, passée le 22 novembre 2026 (187,00 €). Elle a été livrée aujourd'hui, le 24 novembre. Elle contient un pull en laine côtelée vert mousse (S), un t-shirt en coton épais écru (XL) e…",
+      "usage_metadata": {
+       "input_tokens": 2802,
+       "output_tokens": 115,
+       "total_tokens": 2917
+      }
+     },
+     {
+      "type": "human",
+      "content": "Mon pull est arrivé abîmé, je veux le renvoyer. Et mon t-shirt est trop grand : je le voudrais en taille M.",
+      "id": "9910adca-249d-45ff-9b70-8f9b405146da"
+     }
+    ],
+    "steps": 0,
+    "tokens": 0
+   },
    "updates": [
     {
      "keys": [
@@ -82,25 +172,168 @@
         "content": "",
         "tool_calls": [
          {
+          "name": "propose_refund",
+          "args": {
+           "details": "L'écharpe en laine commandée le 8 novembre n'est jamais arrivée.",
+           "order_id": "DEMO-1005",
+           "reason": "lost_parcel"
+          },
+          "id": "chatcmpl-tool-9b3989e4783fbec8"
+         },
+         {
           "name": "propose_exchange",
           "args": {
-           "details": "La jupe est trop grande, elle souhaite un échange contre un S",
-           "item_id": "ITEM-DEMO-1001-3",
+           "details": "Le t-shirt en coton épais écru est trop grand.",
+           "item_id": "ITEM-DEMO-1001-2",
            "reason": "wrong_size",
-           "size": "S"
+           "size": "M"
           },
-          "id": "chatcmpl-tool-801366be7c170fa4"
+          "id": "chatcmpl-tool-8a6e9a8fbbfe72e0"
          }
         ],
         "usage_metadata": {
-         "input_tokens": 4176,
-         "output_tokens": 55,
-         "total_tokens": 4231
+         "input_tokens": 3267,
+         "output_tokens": 209,
+         "total_tokens": 3476
         }
        }
       ],
-      "steps": 2,
-      "tokens": 8269
+      "steps": 1,
+      "tokens": 3083
+     }
+    }
+   ],
+   "sent": [
+    {
+     "content": "Bonjour, où en est ma dernière commande ?",
+     "role": "user"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "function": {
+        "name": "list_orders",
+        "arguments": "{}"
+       },
+       "id": "chatcmpl-tool-843960e24f006f94",
+       "type": "function",
+       "index": 0
+      },
+      {
+       "function": {
+        "name": "read_policy",
+        "arguments": "{}"
+       },
+       "id": "chatcmpl-tool-acdc2e5d3d45d4fe",
+       "type": "function",
+       "index": 0
+      }
+     ],
+     "prefix": false
+    },
+    {
+     "content": "[{\"order_id\": \"DEMO-1001\", \"status\": \"delivered\", \"ordered_on\": \"2026-11-22\", \"delivered_on\": \"2026-11-24\", \"total\": \"187,00 €\", \"items\": [{\"item_id\": \"ITEM-DEMO-1001-1\", \"name\": \"Pull en laine côtelée\", \"color\": \"Vert mousse\", \"size\": \"S\", \"price\": \"89,00 €\"}, {\"item_id\": \"ITEM-DEMO-1001-2\", \"name\": \"T-shirt en coton épais\", \"color\": \"Écru\", \"size\": \"XL\", \"price\": \"29,00 €\"}, {\"item_id\": \"ITEM-DEMO-1001-3\", \"name\": \"Jupe en denim\", \"color\": \"Bleu brut\", \"size\": \"M\", \"price\": \"69,00 €\"}]}, {\"order_id\": \"DEMO-1005\", \"status\": \"in_transit\", \"ordered_on\": \"2026-11-08\", \"delivered_on\": null, \"total\": \"42,00 €\", \"items\": [{\"item_id\": \"ITEM-DEMO-1005-1\", \"name\": \"Écharpe en laine\", \"color\": \"Caramel\", \"size\": null, \"price\": \"42,00 €\"}]}, {\"order_id\": \"DEMO-1002\", \"status\": \"delivered\", \"ordered_on\": \"2026-11-01\", \"delivered_on\": \"2026-11-03\", \"total\": \"59,00 €\", \"items\": [{\"item_id\": \"ITEM-DEMO-1002-1\", \"name\": \"Sweat à col rond\", \"color\": \"Bordeaux\", \"size\": \"M\", \"price\": \"59,00 €\"}]}]",
+     "role": "tool",
+     "tool_call_id": "chatcmpl-tool-843960e24f006f94",
+     "name": "list_orders"
+    },
+    {
+     "content": "# Politique SAV de Maison Orme\n\n## Retours\n- Un article livré peut être retourné dans les 30 jours suivant la livraison.\n- Entre 30 et 45 jours, la boutique décide au cas par cas. Au-delà, le retour est refusé.\n- Le remboursement est du prix de l’article, versé à réception du colis.\n- Jusqu’à 100,00 €, le retour est accepté tout de suite. Au-delà, la boutique le valide.\n\n## Échanges\n- Mêmes délais que les retours, contre une autre taille ou un autre coloris du même article, en stock.\n- La variante souhaitée est réservée, puis expédiée à réception de l’article d’origine.\n\n## Article abîmé ou erreur de préparation\n- Retour ou échange possible pendant 2 ans, après validation de la boutique.\n\n## Renvoi du colis\n- Le client reçoit une étiquette gratuite par mail et a 14 jours pour renvoyer l’article.\n- Un rappel part au bout de 7 jours. Passé le délai, le dossier est clos.\n\n## Colis perdu\n- Un colis en transit depuis 10 jours ou plus après la commande est considéré perdu et remboursé en entier.\n- Jusqu’à 60,00 €, le remboursement est immédiat. Au-delà, la boutique le valide.\n\n## Geste commercial\n- La boutique peut accorder un geste, une fois par commande. Elle décide toujours elle-même.\n\n## Annulation\n- Un retour, un échange ou un remboursement peut être annulé tant que son dossier n’est pas clos. Une question transmise à la boutique ne s’annule pas.\n- L’annulation d’une commande, le changement d’adresse et toute autre demande sont traités par la boutique.\n\n## Livraison\n- France métropolitaine uniquement, en 2 à 5 jours ouvrés. Frais de port : 4,90 €, offerts dès 80 €.\n",
+     "role": "tool",
+     "tool_call_id": "chatcmpl-tool-acdc2e5d3d45d4fe",
+     "name": "read_policy"
+    },
+    {
+     "role": "assistant",
+     "content": "Bonjour Camille.\n\nVotre dernière commande est la DEMO-1001, passée le 22 novembre 2026 (187,00 €). Elle a été livrée aujourd'hui, le 24 novembre. Elle contient un pull en laine côtelée vert mousse (S), un t-shirt en coton épais écru (XL) et une jupe en denim bleu brut (M).\n\nSouhaitez-vous autre chose sur cette commande ?",
+     "tool_calls": null,
+     "prefix": false
+    },
+    {
+     "content": "Mon pull est arrivé abîmé, je veux le renvoyer. Et mon t-shirt est trop grand : je le voudrais en taille M.",
+     "role": "user"
+    }
+   ],
+   "thread": [
+    {
+     "type": "human",
+     "content": "Bonjour, où en est ma dernière commande ?",
+     "id": "98229261-34c1-47d1-9751-ca969486141a"
+    },
+    {
+     "type": "ai",
+     "content": "",
+     "tool_calls": [
+      {
+       "name": "list_orders",
+       "args": {},
+       "id": "chatcmpl-tool-843960e24f006f94"
+      },
+      {
+       "name": "read_policy",
+       "args": {},
+       "id": "chatcmpl-tool-acdc2e5d3d45d4fe"
+      }
+     ],
+     "usage_metadata": {
+      "input_tokens": 1923,
+      "output_tokens": 99,
+      "total_tokens": 2022
+     }
+    },
+    {
+     "type": "tool",
+     "content": "[{\"order_id\": \"DEMO-1001\", \"status\": \"delivered\", \"ordered_on\": \"2026-11-22\", \"delivered_on\": \"2026-11-24\", \"total\": \"187,00 €\", \"items\": [{\"item_id\": \"ITEM-DEMO-1001-1\", \"name\": \"Pull en laine côtelée\", \"color\": \"Vert mousse\", \"size\": \"S\"…",
+     "name": "list_orders",
+     "tool_call_id": "chatcmpl-tool-843960e24f006f94"
+    },
+    {
+     "type": "tool",
+     "content": "# Politique SAV de Maison Orme\n\n## Retours\n- Un article livré peut être retourné dans les 30 jours suivant la livraison.\n- Entre 30 et 45 jours, la boutique décide au cas par cas. Au-delà, le retour est refusé.\n- Le remboursement est du pr…",
+     "name": "read_policy",
+     "tool_call_id": "chatcmpl-tool-acdc2e5d3d45d4fe"
+    },
+    {
+     "type": "ai",
+     "content": "Bonjour Camille.\n\nVotre dernière commande est la DEMO-1001, passée le 22 novembre 2026 (187,00 €). Elle a été livrée aujourd'hui, le 24 novembre. Elle contient un pull en laine côtelée vert mousse (S), un t-shirt en coton épais écru (XL) e…",
+     "usage_metadata": {
+      "input_tokens": 2802,
+      "output_tokens": 115,
+      "total_tokens": 2917
+     }
+    },
+    {
+     "type": "human",
+     "content": "Mon pull est arrivé abîmé, je veux le renvoyer. Et mon t-shirt est trop grand : je le voudrais en taille M.",
+     "id": "9910adca-249d-45ff-9b70-8f9b405146da"
+    },
+    {
+     "type": "ai",
+     "content": "",
+     "tool_calls": [
+      {
+       "name": "check_stock",
+       "args": {
+        "item_id": "ITEM-DEMO-1001-2"
+       },
+       "id": "chatcmpl-tool-be3969dfe104bd02"
+      },
+      {
+       "name": "propose_return",
+       "args": {
+        "details": "Le pull en laine côtelée.vert mousse est arrivé abîmé.",
+        "item_id": "ITEM-DEMO-1001-1",
+        "reason": "damaged"
+       },
+       "id": "chatcmpl-tool-a7683193176294a5"
+      }
+     ],
+     "usage_metadata": {
+      "input_tokens": 2934,
+      "output_tokens": 149,
+      "total_tokens": 3083
      }
     }
    ]
@@ -109,34 +342,105 @@
    "artifact": {
     "done": true,
     "reply": "oui",
-    "reply_id": "d0c210da-83b4-4d6e-8b2b-c6490c0c85e8",
-    "recap": "Annulation du dossier SAV-13D5C364 (échange)"
+    "reply_id": "22e846d2-e785-45e9-aadd-1c46e584834c",
+    "recap": "Annulation du dossier SAV-6DFA26C7 (échange)"
+   },
+   "read": {
+    "pending_actions": [
+     {
+      "call": {
+       "id": "chatcmpl-tool-9b3989e4783fbec8",
+       "name": "propose_refund"
+      },
+      "args": {
+       "order_id": "DEMO-1005",
+       "reason": "lost_parcel",
+       "amount_euros": null,
+       "details": "L'écharpe en laine commandée le 8 novembre n'est jamais arrivée."
+      },
+      "summary": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate"
+     },
+     {
+      "call": {
+       "id": "chatcmpl-tool-8a6e9a8fbbfe72e0",
+       "name": "propose_exchange"
+      },
+      "args": {
+       "item_id": "ITEM-DEMO-1001-2",
+       "size": "M",
+       "color": null,
+       "reason": "wrong_size",
+       "details": "Le t-shirt en coton épais écru est trop grand."
+      },
+      "summary": "Échange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
+     }
+    ],
+    "reply": {
+     "reply": "oui",
+     "reply_id": "1a79826e-0bbe-4ca1-a0d0-039b3e061e38",
+     "recap": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate\n\nÉchange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
+    }
    },
    "updates": [
     {
      "keys": [
       "messages",
-      "proposals",
+      "pending_actions",
       "reply"
      ],
      "values": {
       "messages": [
        {
         "type": "tool",
-        "content": "Le client a confirmé. Dossier SAV-990499AF accepté. Remboursement envoyé. Montant : 42,00 €.",
+        "content": "Le client a confirmé. Dossier SAV-4A018869 accepté. Remboursement envoyé. Montant : 42,00 €.",
         "name": "propose_refund",
-        "tool_call_id": "chatcmpl-tool-8db44216f5d85cd4",
+        "tool_call_id": "chatcmpl-tool-9b3989e4783fbec8",
         "artifact": {
          "done": true,
          "reply": "oui",
-         "reply_id": "25ac14bd-1719-4598-b175-6efe10e8bebf",
-         "recap": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate"
+         "reply_id": "1a79826e-0bbe-4ca1-a0d0-039b3e061e38",
+         "recap": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate\n\nÉchange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
         }
        }
       ],
-      "proposals": [],
+      "pending_actions": [
+       {
+        "call": {
+         "id": "chatcmpl-tool-8a6e9a8fbbfe72e0",
+         "name": "propose_exchange"
+        },
+        "args": {
+         "item_id": "ITEM-DEMO-1001-2",
+         "size": "M",
+         "color": null,
+         "reason": "wrong_size",
+         "details": "Le t-shirt en coton épais écru est trop grand."
+        },
+        "summary": "Échange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
+       }
+      ],
       "reply": null
-     }
+     },
+     "more": [
+      {
+       "messages": [
+        {
+         "type": "tool",
+         "content": "Le client a confirmé. Annulation du dossier SAV-6DFA26C7 transmise. Elle prend effet s’il n’a pas été clos entre-temps ; un mail le confirme.",
+         "name": "cancel_case",
+         "tool_call_id": "chatcmpl-tool-835f3ac0b098bb3f",
+         "artifact": {
+          "done": true,
+          "reply": "oui",
+          "reply_id": "22e846d2-e785-45e9-aadd-1c46e584834c",
+          "recap": "Annulation du dossier SAV-6DFA26C7 (échange)"
+         }
+        }
+       ],
+       "pending_actions": [],
+       "reply": null
+      }
+     ]
     }
    ]
   },
@@ -145,14 +449,44 @@
     "recap": "Retour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)\nRemboursement : 89,00 €, à réception du colis\nAcceptation : soumise à la boutique\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
    },
    "payload": {
-    "question": "Annulation du dossier SAV-13D5C364 (échange)\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer.",
-    "kind": "confirm"
+    "question": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate\n\nÉchange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
+   },
+   "read": {
+    "pending_actions": [
+     {
+      "call": {
+       "id": "chatcmpl-tool-9b3989e4783fbec8",
+       "name": "propose_refund"
+      },
+      "args": {
+       "order_id": "DEMO-1005",
+       "reason": "lost_parcel",
+       "amount_euros": null,
+       "details": "L'écharpe en laine commandée le 8 novembre n'est jamais arrivée."
+      },
+      "summary": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate"
+     },
+     {
+      "call": {
+       "id": "chatcmpl-tool-8a6e9a8fbbfe72e0",
+       "name": "propose_exchange"
+      },
+      "args": {
+       "item_id": "ITEM-DEMO-1001-2",
+       "size": "M",
+       "color": null,
+       "reason": "wrong_size",
+       "details": "Le t-shirt en coton épais écru est trop grand."
+      },
+      "summary": "Échange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
+     }
+    ]
    },
    "updates": [
     {
      "keys": [
       "messages",
-      "proposals",
+      "pending_actions",
       "rejected",
       "steps",
       "tokens"
@@ -163,7 +497,7 @@
         "type": "tool",
         "content": "Récapitulatif montré au client :\nRetour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)\nRemboursement : 89,00 €, à réception du colis\nAcceptation : soumise à la boutique\nIl n’a pas confirmé : rien n’a été enregistré. Sa répon…",
         "name": "propose_return",
-        "tool_call_id": "chatcmpl-tool-94a8a6506ea26085",
+        "tool_call_id": "chatcmpl-tool-a7683193176294a5",
         "artifact": {
          "recap": "Retour : Pull en laine côtelée (Vert mousse · S, commande DEMO-1001)\nRemboursement : 89,00 €, à réception du colis\nAcceptation : soumise à la boutique\n\nConfirmez-vous ? Répondez « oui », ou dites-moi ce qu’il faut changer."
         }
@@ -171,10 +505,10 @@
        {
         "type": "human",
         "content": "Attendez, pouvez-vous ajouter aussi mon écharpe ? Elle n’est jamais arrivée, je veux être remboursé.",
-        "id": "3cb9570b-1c15-4a29-8fad-26261488ccc9"
+        "id": "2cdc3a33-445d-4047-8c2a-f1a1f7c245dc"
        }
       ],
-      "proposals": [],
+      "pending_actions": [],
       "rejected": [],
       "steps": 0,
       "tokens": 0
@@ -191,8 +525,8 @@
       "rejected": [],
       "reply": {
        "reply": "oui",
-       "reply_id": "d0c210da-83b4-4d6e-8b2b-c6490c0c85e8",
-       "recap": "Annulation du dossier SAV-13D5C364 (échange)"
+       "reply_id": "1a79826e-0bbe-4ca1-a0d0-039b3e061e38",
+       "recap": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate\n\nÉchange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
       },
       "steps": 0,
       "tokens": 0
@@ -201,6 +535,37 @@
    ]
   },
   "give_up": {
+   "read": {
+    "messages": [
+     "… et 38 avant",
+     {
+      "type": "tool",
+      "content": "Le client a confirmé. Dossier SAV-04001F7E accepté. L’étiquette de renvoi part par mail ; la suite à réception du colis. Montant : 59,00 €.",
+      "name": "propose_return",
+      "tool_call_id": "chatcmpl-tool-874dd47a4f212123",
+      "artifact": {
+       "done": true,
+       "reply": "oui",
+       "reply_id": "81807620-9f03-44ec-8197-f5ecc747be49",
+       "recap": "Retour : Sweat à col rond (Bordeaux · M, commande DEMO-1002)\nRemboursement : 59,00 €, à réception du colis\nAcceptation : immédiate"
+      }
+     },
+     {
+      "type": "ai",
+      "content": "Votre retour du sweat à col rond bordeaux est accepté (dossier SAV-04001F7E), pour un remboursement de 59,00 € à réception du colis. L'étiquette de renvoi part par mail ; vous avez 14 jours pour renvoyer l'article.",
+      "usage_metadata": {
+       "input_tokens": 4631,
+       "output_tokens": 70,
+       "total_tokens": 4701
+      }
+     },
+     {
+      "type": "human",
+      "content": "Avez-vous une remise pour moi ?",
+      "id": "0c3152a9-9711-4785-ae25-f1ede384149d"
+     }
+    ]
+   },
    "updates": [
     {
      "keys": [
@@ -210,7 +575,7 @@
       "messages": [
        {
         "type": "ai",
-        "content": "Je préfère confier votre demande à la boutique (dossier SAV-5A05EABA). Elle vous répondra par mail."
+        "content": "Je préfère confier votre demande à la boutique (dossier SAV-F3258084). Elle vous répondra par mail."
        }
       ]
      }
@@ -218,6 +583,54 @@
    ]
   },
   "guard": {
+   "read": {
+    "messages": [
+     "… et 25 avant",
+     {
+      "type": "ai",
+      "content": "",
+      "tool_calls": [
+       {
+        "name": "propose_exchange",
+        "args": {
+         "details": "La jupe en denim bleu brut est trop grande.",
+         "item_id": "ITEM-DEMO-1001-3",
+         "reason": "wrong_size",
+         "size": "S"
+        },
+        "id": "chatcmpl-tool-84b4ca4c9bc4f2a9"
+       }
+      ],
+      "usage_metadata": {
+       "input_tokens": 4064,
+       "output_tokens": 52,
+       "total_tokens": 4116
+      }
+     },
+     {
+      "type": "tool",
+      "content": "Le client a confirmé. Dossier SAV-6DFA26C7 accepté. L’étiquette de renvoi part par mail ; la suite à réception du colis.",
+      "name": "propose_exchange",
+      "tool_call_id": "chatcmpl-tool-84b4ca4c9bc4f2a9",
+      "artifact": {
+       "done": true,
+       "reply": "oui",
+       "reply_id": "33b17b95-1d79-482c-ad84-d0ba1dc179a8",
+       "recap": "Échange : Jupe en denim (Bleu brut · M, commande DEMO-1001)\nContre : Bleu brut · S\nAcceptation : immédiate"
+      }
+     },
+     {
+      "type": "ai",
+      "content": "L'échange de la jupe en denim contre une taille S est accepté (dossier SAV-6DFA26C7). Vous recevrez une étiquette de renvoi par mail ; la jupe en S vous sera expédiée à réception de l'originale.",
+      "usage_metadata": {
+       "input_tokens": 4161,
+       "output_tokens": 66,
+       "total_tokens": 4227
+      }
+     }
+    ],
+    "rejected": []
+   },
    "updates": [
     {
      "keys": [
@@ -229,7 +642,7 @@
       "messages": [
        {
         "type": "remove",
-        "id": "61dd53d9-e20c-4a43-81a6-f2120010a2d9"
+        "id": "365a51d7-b8be-4ab6-8ef5-0597638a74e8"
        }
       ],
       "rejected": [
@@ -237,9 +650,9 @@
       ],
       "taken_back": [
        {
-        "after": "95538d34-2e7d-440e-a289-37f4f79ab816",
-        "text": "Voici plutôt une remise de 20 %.",
-        "problem": "pourcentage absent des outils : 20"
+        "after": "0c3152a9-9711-4785-ae25-f1ede384149d",
+        "text": "Je peux vous offrir une remise de 15 %.",
+        "problem": "pourcentage absent des outils : 15"
        }
       ]
      }
@@ -255,73 +668,175 @@
    ]
   },
   "policy": {
+   "read": {
+    "pending_actions": [
+     {
+      "call": {
+       "id": "chatcmpl-tool-9b3989e4783fbec8",
+       "name": "propose_refund"
+      },
+      "args": {
+       "order_id": "DEMO-1005",
+       "reason": "lost_parcel",
+       "amount_euros": null,
+       "details": "L'écharpe en laine commandée le 8 novembre n'est jamais arrivée."
+      }
+     },
+     {
+      "call": {
+       "id": "chatcmpl-tool-8a6e9a8fbbfe72e0",
+       "name": "propose_exchange"
+      },
+      "args": {
+       "item_id": "ITEM-DEMO-1001-2",
+       "size": "M",
+       "color": null,
+       "reason": "wrong_size",
+       "details": "Le t-shirt en coton épais écru est trop grand."
+      }
+     }
+    ]
+   },
    "updates": [
     {
      "keys": [
       "messages",
-      "proposals"
+      "pending_actions"
      ],
      "values": {
-      "messages": [
-       {
-        "type": "tool",
-        "content": "Refusé par les règles (goodwill_limit). Un geste commercial va jusqu’à 37,40 € pour cette commande.",
-        "name": "propose_refund",
-        "tool_call_id": "chatcmpl-tool-a04fb5314085430e"
-       }
-      ],
-      "proposals": [
+      "messages": [],
+      "pending_actions": [
        {
         "call": {
-         "id": "chatcmpl-tool-801366be7c170fa4",
+         "id": "chatcmpl-tool-9b3989e4783fbec8",
+         "name": "propose_refund"
+        },
+        "args": {
+         "order_id": "DEMO-1005",
+         "reason": "lost_parcel",
+         "amount_euros": null,
+         "details": "L'écharpe en laine commandée le 8 novembre n'est jamais arrivée."
+        },
+        "summary": "Remboursement : commande DEMO-1005\nMontant : 42,00 €\nAcceptation : immédiate"
+       },
+       {
+        "call": {
+         "id": "chatcmpl-tool-8a6e9a8fbbfe72e0",
          "name": "propose_exchange"
         },
         "args": {
-         "item_id": "ITEM-DEMO-1001-3",
-         "size": "S",
+         "item_id": "ITEM-DEMO-1001-2",
+         "size": "M",
          "color": null,
          "reason": "wrong_size",
-         "details": "La jupe est trop grande, elle souhaite un échange contre un S"
+         "details": "Le t-shirt en coton épais écru est trop grand."
         },
-        "summary": "Échange : Jupe en denim (Bleu brut · M, commande DEMO-1001)\nContre : Bleu brut · S\nAcceptation : immédiate"
+        "summary": "Échange : T-shirt en coton épais (Écru · XL, commande DEMO-1001)\nContre : Écru · M\nAcceptation : immédiate"
        }
       ]
-     }
+     },
+     "more": [
+      {
+       "messages": [
+        {
+         "type": "tool",
+         "content": "Refusé par les règles (goodwill_limit). Un geste commercial va jusqu’à 37,40 € pour cette commande.",
+         "name": "propose_refund",
+         "tool_call_id": "chatcmpl-tool-bd8902f0f9e1949a"
+        }
+       ],
+       "pending_actions": []
+      }
+     ]
     }
    ]
   },
   "tools": {
+   "read": {
+    "messages": [
+     {
+      "type": "human",
+      "content": "Bonjour, où en est ma dernière commande ?",
+      "id": "98229261-34c1-47d1-9751-ca969486141a"
+     },
+     {
+      "type": "ai",
+      "content": "",
+      "tool_calls": [
+       {
+        "name": "list_orders",
+        "args": {},
+        "id": "chatcmpl-tool-843960e24f006f94"
+       },
+       {
+        "name": "read_policy",
+        "args": {},
+        "id": "chatcmpl-tool-acdc2e5d3d45d4fe"
+       }
+      ],
+      "usage_metadata": {
+       "input_tokens": 1923,
+       "output_tokens": 99,
+       "total_tokens": 2022
+      }
+     }
+    ]
+   },
    "updates": [
     {
      "keys": [
       "messages",
-      "proposals"
+      "pending_actions"
      ],
      "values": {
       "messages": [
        {
         "type": "tool",
+        "content": "[{\"order_id\": \"DEMO-1001\", \"status\": \"delivered\", \"ordered_on\": \"2026-11-22\", \"delivered_on\": \"2026-11-24\", \"total\": \"187,00 €\", \"items\": [{\"item_id\": \"ITEM-DEMO-1001-1\", \"name\": \"Pull en laine côtelée\", \"color\": \"Vert mousse\", \"size\": \"S\"…",
+        "name": "list_orders",
+        "tool_call_id": "chatcmpl-tool-843960e24f006f94"
+       },
+       {
+        "type": "tool",
         "content": "# Politique SAV de Maison Orme\n\n## Retours\n- Un article livré peut être retourné dans les 30 jours suivant la livraison.\n- Entre 30 et 45 jours, la boutique décide au cas par cas. Au-delà, le retour est refusé.\n- Le remboursement est du pr…",
         "name": "read_policy",
-        "tool_call_id": "chatcmpl-tool-a8fd7ed42b4525e4"
+        "tool_call_id": "chatcmpl-tool-acdc2e5d3d45d4fe"
        }
       ],
-      "proposals": [
-       {
-        "call": {
-         "id": "chatcmpl-tool-801366be7c170fa4",
-         "name": "propose_exchange"
+      "pending_actions": []
+     },
+     "more": [
+      {
+       "messages": [],
+       "pending_actions": [
+        {
+         "call": {
+          "id": "chatcmpl-tool-9b3989e4783fbec8",
+          "name": "propose_refund"
+         },
+         "args": {
+          "order_id": "DEMO-1005",
+          "reason": "lost_parcel",
+          "amount_euros": null,
+          "details": "L'écharpe en laine commandée le 8 novembre n'est jamais arrivée."
+         }
         },
-        "args": {
-         "item_id": "ITEM-DEMO-1001-3",
-         "size": "S",
-         "color": null,
-         "reason": "wrong_size",
-         "details": "La jupe est trop grande, elle souhaite un échange contre un S"
+        {
+         "call": {
+          "id": "chatcmpl-tool-8a6e9a8fbbfe72e0",
+          "name": "propose_exchange"
+         },
+         "args": {
+          "item_id": "ITEM-DEMO-1001-2",
+          "size": "M",
+          "color": null,
+          "reason": "wrong_size",
+          "details": "Le t-shirt en coton épais écru est trop grand."
+         }
         }
-       }
-      ]
-     }
+       ]
+      }
+     ]
     }
    ]
   }

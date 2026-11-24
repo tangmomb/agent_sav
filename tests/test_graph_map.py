@@ -7,15 +7,15 @@ import shutil
 import psycopg
 import pytest
 from conftest import PULL, TSHIRT, Chat, propose, refund
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_config
 from langgraph.graph import END, START
 
 from agent_sav import graph_notes
-from agent_sav.graph_map import EXAMPLES, Source, graph_map, kept, parse_sql, updates
+from agent_sav.graph_map import EXAMPLES, Source, filled_keys, graph_map, kept, parse_sql, updates
 from agent_sav.graph_watch import ROOT, Unreadable, Watch
 from agent_sav.studio import case, conversation
-from evals.examples import gathered, merged, observed, tasks
+from evals.examples import exchange, gathered, merged, observed, plain, posted, tasks, thread
 
 
 @pytest.fixture(scope="module")
@@ -44,6 +44,46 @@ def test_notes_cover_the_graph_and_nothing_else(graphs, name):
     assert set(graph_notes.EXITS[name]) == set(graph_notes.ROUTES[name]) == edges
     assert set(graph_notes.KEYS[name]) == {key["name"] for key in shown["schema"]}
     assert set(graph_notes.POSITIONS[name]) == set(nodes(shown))
+    assert set(graph_notes.SQL[name]) == {node["id"] for node in shown["nodes"] if any(each["when"] for each in node.get("sql", []))}
+    assert set(graph_notes.PRODUCED[name]) <= {(node["id"], key["key"]) for node in shown["nodes"]
+                                               for update in node.get("updates", []) for key in update["keys"]}
+    situations = {node["id"]: bool(node["pause"]) + len(node["updates"]) for node in shown["nodes"] if "updates" in node}
+    assert {node: len(each) for node, each in graph_notes.SITUATIONS[name].items()} == {
+        node: count for node, count in situations.items() if count > 1}
+    for node, situation, key in graph_notes.KEPT[name]:
+        entry = nodes(shown)[node]
+        produced = ([[]] if entry["pause"] else []) + [[each["key"] for each in update["keys"]] for update in entry["updates"]]
+        assert key in graph_notes.KEYS[name] and key not in produced[situation]
+    assert set(graph_notes.PERSONAL[name]) <= set(nodes(shown))
+    assert set(graph_notes.READS[name]) == {(node["id"], key) for node in shown["nodes"] for key in node.get("reads", [])}
+
+
+def test_notes_show_the_limits_of_the_code(graphs):
+    from agent_sav import conversation as code
+
+    notes = {key["name"]: key["note"] for key in graphs["conversation"]["schema"]}
+    assert f"Maximum : {code.MAX_STEPS} (" in notes["steps"]
+    assert f"Maximum : {code.MAX_TOKENS:,} (".replace(",", "\u202f") in notes["tokens"]
+    leaving = nodes(graphs["conversation"])["guard"]["exits"]
+    assert any(f"{code.MAX_REJECTED} fois" in each["when"] for each in leaving)
+
+
+def test_every_statement_says_what_it_is_for(graphs):
+    shown = [(node["id"], each) for graph in graphs.values() for node in graph["nodes"]
+             for each in [*node.get("sql", []), *(node["router"] or {}).get("sql", [])]]
+    assert [(node, each["function"], each["operation"]) for node, each in shown if not each["why"]] == []
+    used = {next(i for i, (wanted, function, operation, part, _) in enumerate(graph_notes.WHY) if wanted in (None, node)
+                 and (function, operation) == (each["function"], each["operation"]) and part in each["sql"]) for node, each in shown}
+    assert [graph_notes.WHY[i][:4] for i in range(len(graph_notes.WHY)) if i not in used] == []
+
+
+def test_the_shop_schema_is_all_explained():
+    from agent_sav.database import SHOP_TABLES
+
+    shown = [table["name"] for group in graph_map()["shop"] for table in group["tables"]]
+    assert sorted(shown) == sorted(SHOP_TABLES) and sorted(name for *_, described in graph_notes.SHOP for name in described) == sorted(shown)
+    links = {table["name"]: table["links"] for group in graph_map()["shop"] for table in group["tables"]}
+    assert links["cases"] == ["customers", "orders", "order_items"] and links["customers"] == []
 
 
 def test_bridges_name_real_things(graphs):
@@ -242,7 +282,7 @@ def test_every_key_returned_by_a_node_is_shown(graphs, played, support):
     shown = {(name, node["id"]): {key["key"] for update in node.get("updates", []) for key in update["keys"]}
              for name, graph in graphs.items() for node in graph["nodes"]}
     seen = set()
-    for name, task in tasks(support, chat.id):
+    for name, task, _ in tasks(support, chat.id):
         if isinstance(task.result, dict):
             seen.add((name, task.name))
             assert set(task.result) <= shown[name, task.name], (name, task.name)
@@ -272,35 +312,82 @@ def test_fits():
     assert fits([message | {"tool_calls": []}, "… et 2 de plus"], [[message]]) and not fits([message], [[{"type": "tool"}]])
 
 
-def test_examples_look_like_what_the_nodes_return(played, support):
+def test_examples_look_like_what_the_nodes_return(played, support, monkeypatch):
     """Otherwise the code has changed: record them again with python -m evals examples."""
     _, chat = played
+    monkeypatch.setenv("MISTRAL_API_KEY", "none")
+    with support.thread(chat.id, support.conversation_graph) as (graph, config):
+        messages = graph.get_state(config).values["messages"]
+    sent = json.loads(EXAMPLES.read_text(encoding="utf-8"))["conversation"]["agent"]["sent"]
+    assert fits(sent, [posted("", messages, [])["messages"]])
+    kept = json.loads(EXAMPLES.read_text(encoding="utf-8"))["conversation"]["agent"]["thread"]
+    assert fits(kept, [plain(messages, cut=False)])
     found = observed(support, chat.id, cut=False)
     for graph, every in json.loads(EXAMPLES.read_text(encoding="utf-8")).items():
         for node, entry in every.items():
-            for kind in ("payload", "artifact"):
+            for kind in ("read", "payload", "artifact"):
                 assert kind not in entry or fits(entry[kind], found[graph, node, kind]), (graph, node, kind)
             for update in entry.get("updates", []):
-                for key, value in update["values"].items():
-                    assert fits(value, found[graph, node, (tuple(update["keys"]), key)]), (graph, node, key)
+                for values in (update["values"], *update.get("more", [])):
+                    for key, value in values.items():
+                        assert fits(value, found[graph, node, (tuple(update["keys"]), key)]), (graph, node, key)
 
 
 def test_examples_are_gathered_then_merged(played, support):
     _, chat = played
     recorded = gathered(observed(support, chat.id))
     assert {node for nodes in recorded.values() for node in nodes} >= {"agent", "tools", "policy", "confirm", "apply", "guard", "give_up"}
+    runs = observed(support, chat.id)
+    for graph, every in recorded.items():
+        for node, entry in every.items():
+            shown = [values for update in entry.get("updates", []) for values in (update["values"], *update.get("more", []))]
+            assert all(any(run.get("values") == values for run in runs[graph, node, "runs"]) for values in shown), (graph, node)
+            if shown and "read" in entry:  # the first case goes with what was read
+                first = next(run for run in runs[graph, node, "runs"] if run.get("values") and run.get("read") == entry["read"])
+                assert first["values"] in shown
+    for node, cases in graph_notes.CASES["conversation"].items():
+        [update] = recorded["conversation"][node]["updates"]
+        assert len(update.get("more", [])) >= 1 and all(
+            filled_keys(values) in cases for values in (update["values"], *update["more"])), node
     partial = {"conversation": {"guard": {"updates": recorded["conversation"]["guard"]["updates"][:1]}}}
     assert len(merged(recorded, partial)["conversation"]["guard"]["updates"]) == 2
     assert "payload" in partial["conversation"]["confirm"]
 
 
+def test_the_exchange_shown_is_the_one_posted(monkeypatch):
+    monkeypatch.setenv("MISTRAL_API_KEY", "none")
+    asked = [HumanMessage("Ma commande ?")]
+    read = [*asked, AIMessage("", tool_calls=[{"id": "a", "name": "list_orders", "args": {}}]),
+            ToolMessage("[]", tool_call_id="a", name="list_orders")]
+    thanked = [*read, AIMessage("Aucune."), HumanMessage("Merci")]
+    assert exchange([("S", asked, []), ("S", read, [])]) is None
+    sent = exchange([("S", asked, []), ("S", read, []), ("S", thanked, [])])
+    assert [each["role"] for each in sent] == ["user", "assistant", "tool", "assistant", "user"]
+    assert sent[1]["tool_calls"][0]["function"] == {"name": "list_orders", "arguments": "{}"} and sent[2]["content"] == "[]"
+
+
+def test_the_thread_shown_ends_with_an_answer():
+    asked = [HumanMessage("Ma commande ?", id="1")]
+    read = [*asked, AIMessage("", tool_calls=[{"id": "a", "name": "list_orders", "args": {}}]),
+            ToolMessage("[]", tool_call_id="a", name="list_orders"), AIMessage("Aucune.")]
+    assert thread(asked) is thread(read) is None
+    shown = thread([*read, HumanMessage("Merci", id="2"), AIMessage("Je vous en prie."), HumanMessage("Au revoir", id="3")])
+    assert [each["type"] for each in shown] == ["human", "ai", "tool", "ai", "human", "ai"]
+
+
 def test_every_key_has_an_example(graphs):
+    assert nodes(graphs["conversation"])["agent"]["model"]["example"]
+    assert len(nodes(graphs["conversation"])["agent"]["thread"]) > 2
     for graph in graph_map()["graphs"]:
         for node in graph["nodes"]:
+            assert set(node.get("read_example", {})) == set(node.get("reads", [])), (graph["id"], node["id"])
             for update in node.get("updates", []):
                 assert all(key["example"] for key in update["keys"]), (graph["id"], node["id"])
             if node.get("pause"):
                 assert node["pause"]["example"], node["id"]
+            for update in node.get("updates", []):
+                cases = graph_notes.CASES[graph["id"]].get(node["id"])
+                assert bool(update["case"]) == bool(cases) and all(each["case"] for each in update["more"]), (graph["id"], node["id"])
             assert not node.get("artifacts") or node["artifact_example"], node["id"]
 
 

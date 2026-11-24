@@ -17,7 +17,7 @@ from types import ModuleType
 
 from langgraph.graph import END, START
 
-from . import case_graph, cases, conversation, graph_notes, model, shop, tools
+from . import case_graph, cases, conversation, graph_notes, model, policy, shop, tools
 
 MODULES = {module.__name__.split(".")[-1]: module for module in (conversation, case_graph, cases, shop, tools, model)}
 # What the names the code uses for its collaborators stand for.
@@ -435,18 +435,32 @@ def pause(source: Source, module: ModuleType) -> dict | None:
 EXAMPLES = Path(__file__).parent / "graph_examples.json"
 
 
+def recorded_for(graph: str, node: str) -> dict:
+    return json.loads(EXAMPLES.read_text(encoding="utf-8")).get(graph, {}).get(node, {}) if EXAMPLES.exists() else {}
+
+
+def filled_keys(values: dict) -> tuple[str, ...]:
+    return tuple(sorted(key for key, value in values.items() if value))
+
+
 def with_examples(graph: str, node: str, returned: list[dict], paused: dict | None, kept_artifacts: list[str]) -> dict:
     """Puts next to each key a value it really had. None when no run returned these keys together."""
-    recorded = json.loads(EXAMPLES.read_text(encoding="utf-8")).get(graph, {}).get(node, {}) if EXAMPLES.exists() else {}
+    recorded = recorded_for(graph, node)
     for update in returned:
         names = sorted(key["key"] for key in update["keys"])
-        found = next((each["values"] for each in recorded.get("updates", []) if each["keys"] == names), {})
+        known = next((each for each in recorded.get("updates", []) if each["keys"] == names), {})
+        found, cases = known.get("values", {}), graph_notes.CASES[graph].get(node, {})
+        update["case"] = cases.get(filled_keys(found))
+        update["more"] = [{"case": cases.get(filled_keys(values)), "values": values} for values in known.get("more", [])]
         for key in update["keys"]:
             key["example"] = {"value": found[key["key"]]} if key["key"] in found else None
+            key["note"] = graph_notes.PRODUCED[graph].get((node, key["key"]))
     if paused:
         paused["example"] = recorded.get("payload")
-    return {"updates": returned, "pause": paused, "artifacts": kept_artifacts,
-            "artifact_example": recorded.get("artifact") if kept_artifacts else None}
+    return {"updates": returned, "pause": paused, "artifacts": kept_artifacts, "situations": graph_notes.SITUATIONS[graph].get(node, []),
+            "kept": [{"situation": situation, "key": key, "note": note}
+                     for (keeper, situation, key), note in graph_notes.KEPT[graph].items() if keeper == node],
+            "artifact_example": recorded.get("artifact") if kept_artifacts else None, "thread": recorded.get("thread")}
 
 
 # What a node sends to the model.
@@ -478,7 +492,7 @@ def call_settings() -> list[dict]:
     return [*shown, {"name": "DEADLINE", "value": f"{model.DEADLINE} s"}]
 
 
-def prompt(source: Source) -> dict | None:
+def prompt(source: Source, example: list[dict] | None) -> dict | None:
     """Everything a node gives the model: instructions, what is added to them, messages, tools and options."""
     call = next((node for node, _ in inside(source) if isinstance(node, ast.Call) and text(node.func) == "model"), None)
     if call is None:
@@ -492,7 +506,7 @@ def prompt(source: Source) -> dict | None:
         "place": f"agent_sav/{source.module}.py:{definition.lineno}",
         "additions": [{"when": kept(conditions, {}) or [], "text": template(node.value)} for node, conditions in inside(source)
                       if isinstance(node, ast.AugAssign) and text(node.target) == text(system)],
-        "messages": text(messages), "history": conversation.HISTORY,
+        "messages": text(messages), "history": conversation.HISTORY, "example": example,
         "tools": [{"name": each["function"]["name"], "reads": each["function"]["name"] in tools.READ_TOOLS, "sent": each}
                   for each in tools.schemas()],
         "settings": call_settings(),
@@ -512,7 +526,22 @@ def code_of(function, module: str) -> Source:
 
 
 def routing_code(source: Source) -> str:
-    return ast.unparse(source.node.body) if isinstance(source.node, ast.Lambda) else inspect.cleandoc(ast.unparse(source.node))
+    return ast.unparse(source.node.body) if isinstance(source.node, ast.Lambda) else ast.unparse(source.node)
+
+
+def filled(note: str, module: ModuleType) -> str:
+    """A note with the values of the constants it names, so that it never shows an old one."""
+    def value(found: re.Match) -> str:
+        constant = vars(module).get(found[1]) or getattr(policy, found[1])
+        return policy.euros(constant) if found[1].endswith("_CENTS") else f"{constant:,}".replace(",", "\u202f")
+
+    return re.sub(r"\{([A-Z_]+)\}", value, note)
+
+
+def why(node: str, module: ModuleType, statement: dict) -> str:
+    return next((filled(note, module) for each, function, operation, part, note in graph_notes.WHY
+                 if each in (None, node) and (function, operation) == (statement["function"], statement["operation"])
+                 and part in statement["sql"]), "")
 
 
 def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
@@ -524,7 +553,7 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
     def add_exit(source: str, target: str, router: Source | None) -> None:
         route = graph_notes.ROUTES[name].get((source, target))
         exits.setdefault(source, []).append({
-            "target": target, "when": graph_notes.EXITS[name].get((source, target), ""),
+            "target": target, "when": filled(graph_notes.EXITS[name].get((source, target), ""), module),
             "conditional": router is not None, "route": route,
         })
 
@@ -545,16 +574,21 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
                  "router": routers.get(node)}
         if node in builder.nodes:
             source = functions()[short, f"{builder_name}.{node}"]
-            policy = builder.nodes[node].retry_policy
+            retry = builder.nodes[node].retry_policy
             sql = [each.as_json() for each in statements(source)]
+            for each in [*sql, *((routers.get(node) or {}).get("sql", []))]:
+                each["why"] = why(node, module, each)
             entry |= {
                 "role": graph_notes.ROLES[name].get(node, ""), "place": source.place,
-                "code": inspect.cleandoc(ast.unparse(source.node)),
-                "reads": state_reads(source), "transitions": transitions(source), "model": prompt(source),
+                "code": ast.unparse(source.node),
+                "reads": state_reads(source), "read_example": recorded_for(name, node).get("read", {}),
+                "read_notes": {key: filled(note, module) for (reader, key), note in graph_notes.READS[name].items() if reader == node},
+                "transitions": transitions(source), "model": prompt(source, recorded_for(name, node).get("sent")),
                 **with_examples(name, node, updates(source, keys), pause(source, module), artifacts(source)),
+                "sql_note": graph_notes.SQL[name].get(node, ""), "personal": {question: filled(answer.strip(), module) for question, answer in graph_notes.PERSONAL[name].get(node, {}).items()},
                 "sql": [each for each in sql if not any(
                     (node, f"{each['operation']} shop.{table}") in graph_notes.IMPOSSIBLE for table in each["writes"])],
-                "retry": policy and {"attempts": policy.max_attempts, "on": policy.retry_on.__name__},
+                "retry": retry and {"attempts": retry.max_attempts, "on": retry.retry_on.__name__},
             }
         nodes.append(entry)
 
@@ -562,7 +596,7 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
     for each in schema:
         operator = reducers.get(each["name"])
         each |= {
-            "note": graph_notes.KEYS[name].get(each["name"], ""),
+            "note": filled(graph_notes.KEYS[name].get(each["name"], ""), module),
             "reducer": None if operator is None else "add_messages" if "add_messages" in operator.__name__ else f"operator.{operator.__name__}",
             "read_by": [node["id"] for node in nodes if each["name"] in node.get("reads", []) or each["name"] in (node["router"] or {}).get("reads", [])],
             "written_by": [node["id"] for node in nodes if any(key["key"] == each["name"] for update in node.get("updates", []) for key in update["keys"])],
@@ -584,7 +618,8 @@ def tables() -> list[dict]:
                 continue
             for name, body in re.findall(r"CREATE TABLE IF NOT EXISTS shop\.(\w+) \((.*?)\n\s*\);", node.value, re.S):
                 columns = re.findall(r"^\s*([a-z_]+) (text|integer|date|bigint|jsonb|timestamptz)\b", body, re.M)
-                found[name] = {"name": name, "columns": [{"name": column, "type": kind} for column, kind in columns], "indexes": []}
+                found[name] = {"name": name, "columns": [{"name": column, "type": kind} for column, kind in columns], "indexes": [],
+                               "links": list(dict.fromkeys(re.findall(r"REFERENCES shop\.(\w+)", body)))}
             for name, column, kind in re.findall(r"ALTER TABLE shop\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)", node.value):
                 found[name]["columns"].append({"name": column, "type": kind})
             for index, name, rule in re.findall(r"CREATE UNIQUE INDEX IF NOT EXISTS (\w+) ON shop\.(\w+) (.*?);", node.value, re.S):
@@ -604,6 +639,10 @@ def graph_map() -> dict:
     return {
         "graphs": graphs,
         "tables": [table for table in tables() if table["name"] in used],
+        "shop": [{"name": name, "note": note, "tables": [
+            {"name": table["name"], "note": described[table["name"]], "links": table["links"], "used": table["name"] in used}
+            for table in sorted(tables(), key=lambda each: list(described).index(each["name"]) if each["name"] in described else -1)
+            if table["name"] in described]} for name, note, described in graph_notes.SHOP],
         "bridges": [dict(zip(("from_graph", "from", "table", "to_graph", "to", "note"), bridge)) for bridge in graph_notes.BRIDGES],
     }
 
