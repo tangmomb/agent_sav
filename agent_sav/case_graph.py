@@ -11,7 +11,7 @@
                                                 ├─ expire
                                                 └─ cancel
 
-Pauses are resumed with an action from shop.case_actions (see Cases.add_action). Nothing is written before an interrupt in the same
+Pauses are resumed with an action from sav.case_actions (see Cases.add_action). Nothing is written before an interrupt in the same
 node, and each other node does a single write that can be replayed.
 """
 

@@ -8,8 +8,8 @@ from psycopg.rows import dict_row
 from .cases import Cases
 from .shop import Shop
 
-SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock", "chat_owners", "mcp_tokens", "cases", "case_actions",
-               "case_messages", "refunds")
+SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock")  # the shop's own data
+SAV_TABLES = ("cases", "case_actions", "case_messages", "refunds", "chat_owners", "mcp_tokens")  # the agent's
 CHECKPOINT_TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes")
 
 
@@ -37,6 +37,7 @@ def initialize_database(dsn: str) -> None:
         conn.execute("SELECT pg_advisory_lock(hashtextextended('agent_sav_database_setup', 0))")
         with conn.transaction():
             conn.execute("CREATE SCHEMA IF NOT EXISTS shop")
+            conn.execute("CREATE SCHEMA IF NOT EXISTS sav")
             conn.execute("CREATE SCHEMA IF NOT EXISTS langgraph")
 
         Shop(dsn).setup()

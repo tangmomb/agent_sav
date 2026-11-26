@@ -81,7 +81,7 @@ class Agent:
         with psycopg.connect(dsn, row_factory=dict_row) as conn:
             return conn.execute("""
                 SELECT kind, coalesce(item_id, order_id) AS target, size, color, route, amount_cents AS cents, status
-                FROM shop.cases ORDER BY created_at
+                FROM sav.cases ORDER BY created_at
             """).fetchall()
 
     def close(self) -> None:

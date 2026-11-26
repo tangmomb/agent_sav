@@ -227,18 +227,21 @@ class Statement:
         return {**vars(self), "when": ways}
 
 
+SCHEMA = r"\b(?:shop|sav)"  # the schemas of the code's tables; table names are unique across both
+
+
 def parse_sql(sql: str) -> tuple[str, list[str], list[str], list[str]]:
     """Operation, tables written, tables read, columns written."""
     operation = sql.split()[0].upper()
-    tables = list(dict.fromkeys(re.findall(r"shop\.(\w+)", sql)))
+    tables = list(dict.fromkeys(re.findall(rf"{SCHEMA}\.(\w+)", sql)))
     written, columns = [], []
-    if match := re.match(r"\s*INSERT INTO shop\.(\w+)\s*\(([^)]*)\)", sql):
+    if match := re.match(rf"\s*INSERT INTO {SCHEMA}\.(\w+)\s*\(([^)]*)\)", sql):
         written, columns = [match[1]], [column.strip() for column in match[2].split(",")]
-    elif match := re.match(r"\s*UPDATE shop\.(\w+)", sql):
+    elif match := re.match(rf"\s*UPDATE {SCHEMA}\.(\w+)", sql):
         written = [match[1]]
         assigned = re.search(r"\bSET\b(.*?)(?:\bFROM\b|\bWHERE\b|$)", sql, re.S)
         columns = re.findall(r"(\w+)\s*=", assigned[1])
-    elif match := re.match(r"\s*DELETE FROM shop\.(\w+)", sql):
+    elif match := re.match(rf"\s*DELETE FROM {SCHEMA}\.(\w+)", sql):
         written = [match[1]]
     reads = [table for table in tables if table not in written or operation == "SELECT"]
     return operation, written, reads, columns
@@ -258,7 +261,7 @@ def statements(source: Source) -> list[Statement]:
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Attribute) and node.func.attr == "execute" and node.args and isinstance(node.args[0], ast.Constant):
                     sql = inspect.cleandoc(node.args[0].value)
-                    if "shop." in sql:
+                    if re.search(rf"{SCHEMA}\.", sql):
                         operation, writes, reads, columns = parse_sql(sql)
                         statement = found.setdefault((sql, current.name), Statement(
                             sql, operation, writes, reads, columns, f"agent_sav/{current.module}.py:{node.lineno}", current.name))
@@ -568,6 +571,7 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
             for target in branch.ends.values():
                 add_exit(source, target, router)
 
+    schemas = {table["name"]: table["schema"] for table in tables()}
     nodes = []
     for node in (START, *builder.nodes, END):
         entry = {"id": node, "position": graph_notes.POSITIONS[name].get(node), "exits": exits.get(node, []),
@@ -587,7 +591,7 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
                 **with_examples(name, node, updates(source, keys), pause(source, module), artifacts(source)),
                 "sql_note": graph_notes.SQL[name].get(node, ""), "personal": {question: filled(answer.strip(), module) for question, answer in graph_notes.PERSONAL[name].get(node, {}).items()},
                 "sql": [each for each in sql if not any(
-                    (node, f"{each['operation']} shop.{table}") in graph_notes.IMPOSSIBLE for table in each["writes"])],
+                    (node, f"{each['operation']} {schemas[table]}.{table}") in graph_notes.IMPOSSIBLE for table in each["writes"])],
                 "retry": retry and {"attempts": retry.max_attempts, "on": retry.retry_on.__name__},
             }
         nodes.append(entry)
@@ -610,19 +614,19 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
 
 
 def tables() -> list[dict]:
-    """The tables of the shop, as the setup creates them."""
+    """The tables of the shop and sav schemas, as the setup creates them. Links name the schema: some cross over."""
     found: dict[str, dict] = {}
     for module in ("shop", "cases"):
         for node in ast.walk(tree(module)):
             if not (isinstance(node, ast.Constant) and isinstance(node.value, str) and "CREATE TABLE" in node.value):
                 continue
-            for name, body in re.findall(r"CREATE TABLE IF NOT EXISTS shop\.(\w+) \((.*?)\n\s*\);", node.value, re.S):
+            for schema, name, body in re.findall(r"CREATE TABLE IF NOT EXISTS (shop|sav)\.(\w+) \((.*?)\n\s*\);", node.value, re.S):
                 columns = re.findall(r"^\s*([a-z_]+) (text|integer|date|bigint|jsonb|timestamptz)\b", body, re.M)
-                found[name] = {"name": name, "columns": [{"name": column, "type": kind} for column, kind in columns], "indexes": [],
-                               "links": list(dict.fromkeys(re.findall(r"REFERENCES shop\.(\w+)", body)))}
-            for name, column, kind in re.findall(r"ALTER TABLE shop\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)", node.value):
+                found[name] = {"name": name, "schema": schema, "columns": [{"name": column, "type": kind} for column, kind in columns],
+                               "indexes": [], "links": list(dict.fromkeys(re.findall(r"REFERENCES ((?:shop|sav)\.\w+)", body)))}
+            for name, column, kind in re.findall(rf"ALTER TABLE {SCHEMA}\.(\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)", node.value):
                 found[name]["columns"].append({"name": column, "type": kind})
-            for index, name, rule in re.findall(r"CREATE UNIQUE INDEX IF NOT EXISTS (\w+) ON shop\.(\w+) (.*?);", node.value, re.S):
+            for index, name, rule in re.findall(rf"CREATE UNIQUE INDEX IF NOT EXISTS (\w+) ON {SCHEMA}\.(\w+) (.*?);", node.value, re.S):
                 found[name]["indexes"].append({"name": index, "rule": " ".join(rule.split())})
     return list(found.values())
 
@@ -639,10 +643,10 @@ def graph_map() -> dict:
     return {
         "graphs": graphs,
         "tables": [table for table in tables() if table["name"] in used],
-        "shop": [{"name": name, "note": note, "tables": [
+        "schemas": [{"name": schema, "note": about, "groups": [{"name": name, "note": note, "tables": [
             {"name": table["name"], "note": described[table["name"]], "links": table["links"], "used": table["name"] in used}
             for table in sorted(tables(), key=lambda each: list(described).index(each["name"]) if each["name"] in described else -1)
-            if table["name"] in described]} for name, note, described in graph_notes.SHOP],
+            if table["name"] in described]} for name, note, described in groups]} for schema, about, groups in graph_notes.SCHEMAS],
         "bridges": [dict(zip(("from_graph", "from", "table", "to_graph", "to", "note"), bridge)) for bridge in graph_notes.BRIDGES],
     }
 

@@ -1,4 +1,4 @@
-"""Support cases in the shop database.
+"""Support cases, in the sav schema next to the shop's.
 
 Every write can be replayed: opening a case is keyed by the request that asked for it, moving a case
 forward depends on its current status, and emails and actions are keyed too.
@@ -44,7 +44,13 @@ class Cases:
         with self.connect() as conn:
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('sav_cases_setup', 0))")
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS shop.cases (
+                -- These tables were in the shop schema before, and case_actions was called case_commands.
+                ALTER TABLE IF EXISTS shop.case_commands RENAME TO case_actions;
+                ALTER TABLE IF EXISTS shop.cases SET SCHEMA sav;
+                ALTER TABLE IF EXISTS shop.case_actions SET SCHEMA sav;
+                ALTER TABLE IF EXISTS shop.case_messages SET SCHEMA sav;
+                ALTER TABLE IF EXISTS shop.refunds SET SCHEMA sav;
+                CREATE TABLE IF NOT EXISTS sav.cases (
                     id text PRIMARY KEY,
                     request_key text NOT NULL UNIQUE,  -- what asked for it, so that a replay opens nothing twice
                     customer_id text NOT NULL REFERENCES shop.customers,
@@ -68,34 +74,33 @@ class Cases:
                     CHECK ((kind IN ('return', 'exchange')) = (item_id IS NOT NULL)),
                     CHECK (kind <> 'refund' OR order_id IS NOT NULL)
                 );
-                ALTER TABLE shop.cases ADD COLUMN IF NOT EXISTS alerted_at timestamptz;  -- operator told about it
+                ALTER TABLE sav.cases ADD COLUMN IF NOT EXISTS alerted_at timestamptz;  -- operator told about it
                 -- Whatever the rules say, an article is sent back once at a time and returned only once.
-                CREATE UNIQUE INDEX IF NOT EXISTS one_case_per_item ON shop.cases (item_id)
+                CREATE UNIQUE INDEX IF NOT EXISTS one_case_per_item ON sav.cases (item_id)
                     WHERE item_id IS NOT NULL AND (status IN ('opened', 'awaiting_shop', 'awaiting_parcel')
                         OR (kind = 'return' AND status = 'completed'));
-                CREATE UNIQUE INDEX IF NOT EXISTS one_refund_per_order ON shop.cases (order_id, reason)
+                CREATE UNIQUE INDEX IF NOT EXISTS one_refund_per_order ON sav.cases (order_id, reason)
                     WHERE kind = 'refund' AND status IN ('opened', 'awaiting_shop', 'completed');
-                -- Inputs of the case graph, handled in order and once each. Called case_commands before.
-                ALTER TABLE IF EXISTS shop.case_commands RENAME TO case_actions;
-                CREATE TABLE IF NOT EXISTS shop.case_actions (
+                -- Inputs of the case graph, handled in order and once each.
+                CREATE TABLE IF NOT EXISTS sav.case_actions (
                     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                    case_id text NOT NULL REFERENCES shop.cases,
+                    case_id text NOT NULL REFERENCES sav.cases,
                     kind text NOT NULL,
                     payload jsonb NOT NULL DEFAULT '{}',
                     key text NOT NULL UNIQUE,
                     outcome text CHECK (outcome IN ('applied', 'ignored')),
                     created_at timestamptz NOT NULL DEFAULT now()
                 );
-                CREATE TABLE IF NOT EXISTS shop.case_messages (
+                CREATE TABLE IF NOT EXISTS sav.case_messages (
                     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-                    case_id text NOT NULL REFERENCES shop.cases,
+                    case_id text NOT NULL REFERENCES sav.cases,
                     sender text NOT NULL CHECK (sender IN ('sav', 'shop')),
                     body text NOT NULL,
                     key text NOT NULL UNIQUE,
                     created_at timestamptz NOT NULL DEFAULT now()
                 );
-                CREATE TABLE IF NOT EXISTS shop.refunds (
-                    case_id text PRIMARY KEY REFERENCES shop.cases,
+                CREATE TABLE IF NOT EXISTS sav.refunds (
+                    case_id text PRIMARY KEY REFERENCES sav.cases,
                     order_id text NOT NULL REFERENCES shop.orders,
                     amount_cents integer NOT NULL CHECK (amount_cents > 0),
                     created_at timestamptz NOT NULL DEFAULT now()
@@ -108,9 +113,9 @@ class Cases:
     def item(conn, customer_id: str, item_id: str) -> dict | None:
         return conn.execute("""
             SELECT i.item_id, i.order_id, i.product_id, i.size, p.name, p.color, p.price_cents, o.status, o.delivered_on,
-                   (SELECT c.id FROM shop.cases c WHERE c.item_id = i.item_id
+                   (SELECT c.id FROM sav.cases c WHERE c.item_id = i.item_id
                         AND c.status IN ('opened', 'awaiting_shop', 'awaiting_parcel')) AS active_case,
-                   EXISTS (SELECT 1 FROM shop.cases c WHERE c.item_id = i.item_id
+                   EXISTS (SELECT 1 FROM sav.cases c WHERE c.item_id = i.item_id
                         AND c.kind = 'return' AND c.status = 'completed') AS returned
             FROM shop.order_items i JOIN shop.orders o ON o.id = i.order_id JOIN shop.products p ON p.id = i.product_id
             WHERE i.item_id = %s AND o.customer_id = %s
@@ -131,7 +136,7 @@ class Cases:
             SELECT o.id, o.status, o.ordered_on,
                    (SELECT sum(p.price_cents)::int FROM shop.order_items i JOIN shop.products p ON p.id = i.product_id
                     WHERE i.order_id = o.id) AS total_cents,
-                   ARRAY(SELECT c.reason FROM shop.cases c WHERE c.order_id = o.id AND c.kind = 'refund'
+                   ARRAY(SELECT c.reason FROM sav.cases c WHERE c.order_id = o.id AND c.kind = 'refund'
                          AND c.status IN ('opened', 'awaiting_shop', 'completed')) AS refunds
             FROM shop.orders o WHERE o.id = %s AND o.customer_id = %s
         """, (order_id, customer_id)).fetchone()
@@ -141,7 +146,7 @@ class Cases:
         now = self.clock()
         today = now.date()
         recent_auto = conn.execute("""
-            SELECT count(*)::int AS total FROM shop.cases WHERE customer_id = %s AND route = 'auto'
+            SELECT count(*)::int AS total FROM sav.cases WHERE customer_id = %s AND route = 'auto'
                 AND status NOT IN ('cancelled', 'expired') AND created_at > %s
         """, (customer_id, now - timedelta(days=policy.AUTO_LIMIT_DAYS))).fetchone()["total"]
         fields = {"reason": args.get("reason"), "details": args.get("details") or ""}
@@ -175,7 +180,7 @@ class Cases:
             return policy.decide_cancel(own), {"case_id": args["case_id"], "kind": "cancel"}
         else:
             total = conn.execute("""
-                SELECT count(*)::int AS total FROM shop.cases
+                SELECT count(*)::int AS total FROM sav.cases
                 WHERE customer_id = %s AND kind = 'question' AND status = 'awaiting_shop'
             """, (customer_id,)).fetchone()["total"]
             verdict = policy.decide_question(total)
@@ -218,7 +223,7 @@ class Cases:
         with self.connect() as conn:
             # One opening at a time per customer.
             conn.execute("SELECT 1 FROM shop.customers WHERE id = %s FOR NO KEY UPDATE", (customer_id,))
-            existing = conn.execute("SELECT * FROM shop.cases WHERE request_key = %s", (request_key,)).fetchone()
+            existing = conn.execute("SELECT * FROM sav.cases WHERE request_key = %s", (request_key,)).fetchone()
             if existing:
                 return existing, None
             verdict, fields = self.check(conn, customer_id, action, args)
@@ -229,7 +234,7 @@ class Cases:
                 if not Shop.move_stock(conn, item["product_id"], fields["size"], fields["color"], -1):
                     return None, policy.refused("out_of_stock", "Cette variante vient de passer en rupture de stock.")
             case = conn.execute("""
-                INSERT INTO shop.cases (id, request_key, customer_id, kind, route, rule, order_id, item_id, size, color,
+                INSERT INTO sav.cases (id, request_key, customer_id, kind, route, rule, order_id, item_id, size, color,
                                         reason, details, amount_cents, created_at, updated_at)
                 VALUES (%(id)s, %(request_key)s, %(customer_id)s, %(kind)s, %(route)s, %(rule)s, %(order_id)s, %(item_id)s,
                         %(size)s, %(color)s, %(reason)s, %(details)s, %(amount_cents)s, %(now)s, %(now)s)
@@ -248,12 +253,12 @@ class Cases:
         Returns False when the case is already there, so a replayed step changes nothing.
         """
         with self.connect() as conn:
-            case = conn.execute("SELECT * FROM shop.cases WHERE id = %s FOR UPDATE", (case_id,)).fetchone()
+            case = conn.execute("SELECT * FROM sav.cases WHERE id = %s FOR UPDATE", (case_id,)).fetchone()
             if case["status"] == after:
                 return False
             if case["status"] not in before:
                 raise WrongStatus(f"Le dossier {case_id} est « {case['status']} », pas {' ou '.join(before)}.")
-            conn.execute("UPDATE shop.cases SET status = %s, remind_at = NULL, due_at = NULL, updated_at = %s WHERE id = %s",
+            conn.execute("UPDATE sav.cases SET status = %s, remind_at = NULL, due_at = NULL, updated_at = %s WHERE id = %s",
                          (after, self.clock(), case_id))
             if effect:
                 effect(conn, case)
@@ -263,18 +268,18 @@ class Cases:
 
     def send_mail(self, conn, case_id: str, step: str, body: str, sender: str = "sav") -> None:
         conn.execute("""
-            INSERT INTO shop.case_messages (case_id, sender, body, key, created_at) VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO sav.case_messages (case_id, sender, body, key, created_at) VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (key) DO NOTHING
         """, (case_id, sender, body, f"{case_id}:{step}", self.clock()))
 
     def wait_for_parcel(self, conn, case: dict) -> None:
         now = self.clock()
-        conn.execute("UPDATE shop.cases SET remind_at = %s, due_at = %s WHERE id = %s", (
+        conn.execute("UPDATE sav.cases SET remind_at = %s, due_at = %s WHERE id = %s", (
             now + timedelta(days=policy.PARCEL_REMINDER_DAYS), now + timedelta(days=policy.PARCEL_EXPIRY_DAYS), case["id"]))
 
     def remind(self, case_id: str, body: str) -> None:
         with self.connect() as conn:
-            conn.execute("UPDATE shop.cases SET remind_at = NULL WHERE id = %s", (case_id,))
+            conn.execute("UPDATE sav.cases SET remind_at = NULL WHERE id = %s", (case_id,))
             self.send_mail(conn, case_id, "reminder", body)
 
     @staticmethod
@@ -302,7 +307,7 @@ class Cases:
                 WHERE i.item_id = %s AND bought.id = i.product_id AND wanted.color = %s
             """, (case["size"], case["item_id"], case["color"]))
         else:
-            conn.execute("INSERT INTO shop.refunds (case_id, order_id, amount_cents) VALUES (%s, %s, %s)",
+            conn.execute("INSERT INTO sav.refunds (case_id, order_id, amount_cents) VALUES (%s, %s, %s)",
                          (case["id"], case["order_id"], case["amount_cents"]))
 
     # Actions: what happens to a case from outside (shop, customer, parcel, time).
@@ -310,33 +315,33 @@ class Cases:
     def add_action(self, case_id: str, kind: str, key: str, payload: dict | None = None) -> int:
         with self.connect() as conn:
             conn.execute("""
-                INSERT INTO shop.case_actions (case_id, kind, payload, key) VALUES (%s, %s, %s, %s)
+                INSERT INTO sav.case_actions (case_id, kind, payload, key) VALUES (%s, %s, %s, %s)
                 ON CONFLICT (key) DO NOTHING
             """, (case_id, kind, Json(payload or {}), key))
-            return conn.execute("SELECT id FROM shop.case_actions WHERE key = %s", (key,)).fetchone()["id"]
+            return conn.execute("SELECT id FROM sav.case_actions WHERE key = %s", (key,)).fetchone()["id"]
 
     def next_action(self, case_id: str) -> dict | None:
         with self.connect() as conn:
             return conn.execute("""
-                SELECT id, kind, payload FROM shop.case_actions
+                SELECT id, kind, payload FROM sav.case_actions
                 WHERE case_id = %s AND outcome IS NULL ORDER BY id LIMIT 1
             """, (case_id,)).fetchone()
 
     def action_done(self, action_id: int, outcome: str) -> None:
         with self.connect() as conn:
-            conn.execute("UPDATE shop.case_actions SET outcome = %s WHERE id = %s", (outcome, action_id))
+            conn.execute("UPDATE sav.case_actions SET outcome = %s WHERE id = %s", (outcome, action_id))
 
     def action_outcome(self, action_id: int) -> str | None:
         with self.connect() as conn:
-            return conn.execute("SELECT outcome FROM shop.case_actions WHERE id = %s", (action_id,)).fetchone()["outcome"]
+            return conn.execute("SELECT outcome FROM sav.case_actions WHERE id = %s", (action_id,)).fetchone()["outcome"]
 
     def add_due_actions(self) -> None:
         """Turns the deadlines that have passed into actions, once each."""
         with self.connect() as conn:
             conn.execute("""
-                INSERT INTO shop.case_actions (case_id, kind, key)
+                INSERT INTO sav.case_actions (case_id, kind, key)
                 SELECT id, due.kind, id || ':' || due.kind || ':' || due.at
-                FROM shop.cases, LATERAL (VALUES ('expire', due_at), ('remind', remind_at)) AS due (kind, at)
+                FROM sav.cases, LATERAL (VALUES ('expire', due_at), ('remind', remind_at)) AS due (kind, at)
                 WHERE status = 'awaiting_parcel' AND due.at <= %(now)s AND (due.kind = 'expire' OR due_at > %(now)s)
                 ON CONFLICT (key) DO NOTHING
             """, {"now": self.clock()})
@@ -345,8 +350,8 @@ class Cases:
         """Cases whose graph has something to do, including after a crash."""
         with self.connect() as conn:
             return [row["id"] for row in conn.execute("""
-                SELECT id FROM shop.cases WHERE status = 'opened'
-                    OR id IN (SELECT case_id FROM shop.case_actions WHERE outcome IS NULL)
+                SELECT id FROM sav.cases WHERE status = 'opened'
+                    OR id IN (SELECT case_id FROM sav.case_actions WHERE outcome IS NULL)
                 ORDER BY created_at
             """)]
 
@@ -356,7 +361,7 @@ class Cases:
         if conn is None:
             with self.connect() as conn:
                 return self.get(case_id, conn)
-        return conn.execute("SELECT * FROM shop.cases WHERE id = %s", (case_id,)).fetchone()
+        return conn.execute("SELECT * FROM sav.cases WHERE id = %s", (case_id,)).fetchone()
 
     def describe(self, case: dict) -> str:
         """One line naming what a case is about, for emails."""
@@ -375,8 +380,8 @@ class Cases:
             return conn.execute("""
                 SELECT c.id, c.kind, c.status, c.order_id, c.item_id, p.name AS article, c.size, c.color, c.amount_cents,
                        c.created_at, c.due_at,
-                       (SELECT m.body FROM shop.case_messages m WHERE m.case_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_mail
-                FROM shop.cases c LEFT JOIN shop.order_items i USING (item_id) LEFT JOIN shop.products p ON p.id = i.product_id
+                       (SELECT m.body FROM sav.case_messages m WHERE m.case_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_mail
+                FROM sav.cases c LEFT JOIN shop.order_items i USING (item_id) LEFT JOIN shop.products p ON p.id = i.product_id
                 WHERE c.customer_id = %s ORDER BY c.created_at DESC LIMIT 10
             """, (customer_id,)).fetchall()
 
@@ -385,7 +390,7 @@ class Cases:
         with self.connect() as conn:
             return conn.execute("""
                 SELECT c.*, p.name, p.color AS bought_color, i.size AS bought_size, u.first_name, u.name AS last_name
-                FROM shop.cases c JOIN shop.customers u ON u.id = c.customer_id
+                FROM sav.cases c JOIN shop.customers u ON u.id = c.customer_id
                 LEFT JOIN shop.order_items i USING (item_id) LEFT JOIN shop.products p ON p.id = i.product_id
                 WHERE c.status IN ('awaiting_shop', 'awaiting_parcel') ORDER BY c.created_at
             """).fetchall()
@@ -394,21 +399,21 @@ class Cases:
         """Cases the operator has not been told about, and when the last alert went out."""
         with self.connect() as conn:
             waiting = conn.execute("""
-                SELECT id, kind FROM shop.cases WHERE status = 'awaiting_shop' AND alerted_at IS NULL ORDER BY created_at
+                SELECT id, kind FROM sav.cases WHERE status = 'awaiting_shop' AND alerted_at IS NULL ORDER BY created_at
             """).fetchall()
-            return waiting, conn.execute("SELECT max(alerted_at) AS last FROM shop.cases").fetchone()["last"]
+            return waiting, conn.execute("SELECT max(alerted_at) AS last FROM sav.cases").fetchone()["last"]
 
     def alerted(self, case_ids: list[str]) -> None:
         with self.connect() as conn:
-            conn.execute("UPDATE shop.cases SET alerted_at = %s WHERE id = ANY(%s)", (self.clock(), case_ids))
+            conn.execute("UPDATE sav.cases SET alerted_at = %s WHERE id = ANY(%s)", (self.clock(), case_ids))
 
     def history(self, case_id: str) -> list[dict]:
         """What happened to a case: its opening, its actions and its emails, in order."""
         with self.connect() as conn:
             return conn.execute("""
-                SELECT created_at AS at, 'opened' AS kind, route AS text FROM shop.cases WHERE id = %(id)s
-                UNION ALL SELECT created_at, 'command', kind FROM shop.case_actions WHERE case_id = %(id)s AND outcome = 'applied'
-                UNION ALL SELECT created_at, 'mail', split_part(body, E'\\n', 1) FROM shop.case_messages WHERE case_id = %(id)s
+                SELECT created_at AS at, 'opened' AS kind, route AS text FROM sav.cases WHERE id = %(id)s
+                UNION ALL SELECT created_at, 'command', kind FROM sav.case_actions WHERE case_id = %(id)s AND outcome = 'applied'
+                UNION ALL SELECT created_at, 'mail', split_part(body, E'\\n', 1) FROM sav.case_messages WHERE case_id = %(id)s
                 ORDER BY at
             """, {"id": case_id}).fetchall()
 
@@ -417,6 +422,6 @@ class Cases:
         with self.connect() as conn:
             return conn.execute("""
                 SELECT m.case_id, m.sender, m.body, m.created_at
-                FROM shop.case_messages m JOIN shop.cases c ON c.id = m.case_id
+                FROM sav.case_messages m JOIN sav.cases c ON c.id = m.case_id
                 WHERE c.customer_id = %s ORDER BY m.created_at DESC, m.id DESC
             """, (customer_id,)).fetchall()

@@ -136,7 +136,7 @@ function drawAll() {
   svg.append(draw("rect", {class: "band", x: 8, y: BAND.y, width: 1254, height: BAND.height, rx: 10}));
   svg.append(draw("path", {class: "band-head", d: `M8 ${BAND.y + 29}V${BAND.y + 10}Q8 ${BAND.y} 18 ${BAND.y}H1252Q1262 ${BAND.y} 1262 ${BAND.y + 10}V${BAND.y + 29}Z`}));
   const title = draw("text", {class: "graph-note band-title", x: 20, y: BAND.y + 19.5});
-  title.textContent = "Base SQL, schéma shop, partagé : les deux graphes ne s’appellent jamais, ils se parlent par ces tables";
+  title.textContent = "Base SQL, schémas shop et sav, partagés : les deux graphes ne s’appellent jamais, ils se parlent par ces tables";
   svg.append(title);
 
   const index = (name) => data.tables.findIndex((table) => table.name === name);
@@ -175,11 +175,13 @@ function drawAll() {
 
   data.tables.forEach((table, i) => {
     const [x, y] = tableCenter(i);
-    const shape = draw("g", {class: "table", "data-table": table.name}, draw("rect", {x: x - 63, y: y - 17, width: 126, height: 34, rx: 6}));
+    const shape = draw("g", {class: `table ${table.schema}`, "data-table": table.name}, draw("rect", {x: x - 63, y: y - 17, width: 126, height: 34, rx: 6}));
     const name = draw("text", {x, y});
     name.textContent = table.name;
-    shape.append(name);
-    svg.append(pressable(shape, () => go(`table/${table.name}`), `Table ${table.name}`));
+    const tip = draw("title");
+    tip.textContent = `${table.schema}.${table.name}`;
+    shape.append(name, tip);
+    svg.append(pressable(shape, () => go(`table/${table.name}`), `Table ${table.schema}.${table.name}`));
   });
   svg.append(draw("g", {id: "overlay"}));
   canvas.replaceChildren(svg);
@@ -529,7 +531,7 @@ function tablePanel(table) {
   const list = tableUsers(table.name);
   const bridges = data.bridges.filter((bridge) => bridge.table === table.name);
   return [
-    el("p", {class: "kicker"}, "Table"), el("h2", {}, `shop.${table.name}`),
+    el("p", {class: "kicker"}, "Table"), el("h2", {}, `${table.schema}.${table.name}`),
     ...["writes", "reads"].flatMap((kind) => section(kind === "writes" ? "Écrite par" : "Lue par",
       ...Object.keys(graphs).flatMap((graph) => [el("h4", {}, TITLES[graph]), users(list.filter((each) => each.kind === kind && each.graph === graph))]))),
     ...(bridges.length ? section("Passages d’un graphe à l’autre", ...bridges.map(bridgeCard)) : []),
@@ -587,12 +589,13 @@ function schemaPanel() {
         ...graph.context.fields.flatMap((each) => [el("code", {}, `${each.name}: ${each.type}`), " "])))),
     ...section("Ce que les deux graphes partagent",
       el("p", {class: "muted"}, "Aucun état : seulement la base."), ...data.bridges.map(bridgeCard)),
-    el("div", {class: "part db-part"}, el("p", {class: "part-name"}, "Base SQL"), ...section("Comment est organisé le schéma shop",
-      el("p", {}, "Les données de la boutique, communes aux deux graphes. L’état des graphes n’y est pas : LangGraph l’enregistre dans un autre schéma, langgraph."),
-      ...data.shop.flatMap((group) => [el("h4", {}, group.name), el("p", {class: "muted"}, group.note),
-        el("table", {class: "grid shop-grid"}, el("thead", {}, el("tr", {}, ...["Table", "À quoi elle sert", "Liée à"].map((each) => el("th", {}, each)))),
-          el("tbody", {}, ...group.tables.map((table) => el("tr", {}, el("td", {}, chip(table.name, "", table.used ? `table/${table.name}` : undefined)),
-            el("td", {}, table.note), el("td", {class: "muted"}, table.links.join(", ") || "—")))))]))),
+    el("div", {class: "part db-part"}, el("p", {class: "part-name"}, "Base SQL"),
+      ...data.schemas.flatMap((schema) => section(`Schéma ${schema.name}`, el("p", {}, schema.note),
+        ...schema.groups.flatMap((group) => [el("h4", {}, group.name), el("p", {class: "muted"}, group.note),
+          el("table", {class: "grid shop-grid"}, el("thead", {}, el("tr", {}, ...["Table", "À quoi elle sert", "Liée à"].map((each) => el("th", {}, each)))),
+            el("tbody", {}, ...group.tables.map((table) => el("tr", {}, el("td", {}, chip(table.name, "", table.used ? `table/${table.name}` : undefined)),
+              el("td", {}, table.note), el("td", {class: "muted"}, table.links.join(", ") || "—")))))]))),
+      el("p", {class: "muted"}, "L’état des graphes n’est dans aucun des deux : LangGraph l’enregistre dans un troisième schéma, langgraph.")),
   ];
 }
 

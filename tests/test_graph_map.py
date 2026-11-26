@@ -2,6 +2,7 @@
 
 import inspect
 import json
+import re
 import shutil
 
 import psycopg
@@ -77,13 +78,17 @@ def test_every_statement_says_what_it_is_for(graphs):
     assert [graph_notes.WHY[i][:4] for i in range(len(graph_notes.WHY)) if i not in used] == []
 
 
-def test_the_shop_schema_is_all_explained():
-    from agent_sav.database import SHOP_TABLES
+def test_both_schemas_are_all_explained():
+    from agent_sav.database import SAV_TABLES, SHOP_TABLES
 
-    shown = [table["name"] for group in graph_map()["shop"] for table in group["tables"]]
-    assert sorted(shown) == sorted(SHOP_TABLES) and sorted(name for *_, described in graph_notes.SHOP for name in described) == sorted(shown)
-    links = {table["name"]: table["links"] for group in graph_map()["shop"] for table in group["tables"]}
-    assert links["cases"] == ["customers", "orders", "order_items"] and links["customers"] == []
+    schemas = {schema["name"]: schema for schema in graph_map()["schemas"]}
+    shown = {name: [table["name"] for group in schema["groups"] for table in group["tables"]] for name, schema in schemas.items()}
+    assert sorted(shown["shop"]) == sorted(SHOP_TABLES) and sorted(shown["sav"]) == sorted(SAV_TABLES)
+    described = [name for *_, groups in graph_notes.SCHEMAS for *_, tables in groups for name in tables]
+    assert sorted(described) == sorted(SHOP_TABLES + SAV_TABLES)
+    links = {table["name"]: table["links"] for schema in schemas.values() for group in schema["groups"] for table in group["tables"]}
+    assert links["cases"] == ["shop.customers", "shop.orders", "shop.order_items"] and links["customers"] == []
+    assert links["case_actions"] == ["sav.cases"]
 
 
 def test_bridges_name_real_things(graphs):
@@ -95,11 +100,13 @@ def test_bridges_name_real_things(graphs):
 
 def test_exceptions_hide_something(graphs):
     """An exception no longer needed would hide a real statement one day."""
-    from agent_sav.graph_map import functions, statements
+    from agent_sav.graph_map import functions, statements, tables
+
+    schema_of = {table["name"]: table["schema"] for table in tables()}.get
 
     for node, operation in graph_notes.IMPOSSIBLE:
         source = next(each for each in functions().values() if each.name.startswith("build_") and each.node.name == node)
-        assert operation in {f"{each.operation} shop.{table}" for each in statements(source) for table in each.writes}
+        assert operation in {f"{each.operation} {schema_of(table)}.{table}" for each in statements(source) for table in each.writes}
 
 
 def test_the_prompt_shown_is_the_one_sent(graphs, database, clock):
@@ -186,8 +193,8 @@ def test_some_contracts(graphs):
 
 
 @pytest.mark.parametrize(("sql", "expected"), [
-    ("INSERT INTO shop.refunds (case_id, amount_cents) VALUES (%s, %s)", ("INSERT", ["refunds"], [], ["case_id", "amount_cents"])),
-    ("UPDATE shop.cases SET status = %s, due_at = NULL WHERE id = %s", ("UPDATE", ["cases"], [], ["status", "due_at"])),
+    ("INSERT INTO sav.refunds (case_id, amount_cents) VALUES (%s, %s)", ("INSERT", ["refunds"], [], ["case_id", "amount_cents"])),
+    ("UPDATE sav.cases SET status = %s, due_at = NULL WHERE id = %s", ("UPDATE", ["cases"], [], ["status", "due_at"])),
     ("SELECT 1 FROM shop.orders o JOIN shop.order_items i ON true", ("SELECT", [], ["orders", "order_items"], [])),
 ])
 def test_parse_sql(sql, expected):
@@ -214,7 +221,7 @@ def played(support, model, clock, query, monkeypatch):
     executed, real = set(), psycopg.Connection.execute
 
     def execute(self, sql, *args, **options):
-        if isinstance(sql, str) and "shop." in sql:
+        if isinstance(sql, str) and re.search(r"\b(?:shop|sav)\.", sql):
             try:
                 config = get_config()
             except RuntimeError:

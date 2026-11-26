@@ -244,25 +244,29 @@ BRIDGES = (
     ("conversation", "apply", "case_actions", "case", "await_parcel", "L’annulation du client reprend la pause."),
 )
 
-# How the shop schema is organised: its tables, by what they are for.
-SHOP = (
-    ("La boutique", "Ce qu’elle vend, et ce que ses clients ont acheté.", {
-        "customers": "Les clients.",
-        "products": "Le catalogue : une ligne par couleur d’un produit, avec son prix.",
-        "stock": "Ce qu’il reste de chaque produit, taille par taille.",
-        "orders": "Les commandes : leur client, leur statut, leurs dates de commande et de livraison.",
-        "order_items": "Les articles achetés, un par ligne : quel produit, quelle taille, dans quelle commande.",
-    }),
-    ("Le SAV", "Ce que les deux graphes créent et font avancer.", {
-        "cases": "Un dossier par action confirmée par le client (retour, échange, remboursement) ou par question confiée à la boutique : son type, son statut, le client, l’article ou la commande, le montant, les échéances.",
-        "case_actions": "Les actions demandées sur un dossier : décision de la boutique, colis reçu, annulation du client, échéance passée. Chacune reprend une pause du graphe dossier, ou est ignorée si le dossier n’attend pas cette action.",
-        "case_messages": "Les mails d’un dossier, de l’agent ou de la boutique.",
-        "refunds": "Les remboursements faits, un au plus par dossier.",
-    }),
-    ("Les accès", "Qui est le client. Aucun nœud ne les lit : le serveur s’en sert avant de lancer un graphe.", {
-        "chat_owners": "Quel client a ouvert chaque chat. La conversation elle-même n’est pas ici : elle est gardée par le graphe, dans le schéma langgraph.",
-        "mcp_tokens": "Les jetons du serveur MCP et leur client. Seule leur empreinte est gardée.",
-    }),
+# How the database is organised: each schema, and its tables by what they are for.
+SCHEMAS = (
+    ("shop", "Les données de la boutique : elles existent sans l’agent. Il les lit, et n’y écrit que le stock et l’article échangé.", (
+        ("La boutique", "Ce qu’elle vend, et ce que ses clients ont acheté.", {
+            "customers": "Les clients.",
+            "products": "Le catalogue : une ligne par couleur d’un produit, avec son prix.",
+            "stock": "Ce qu’il reste de chaque produit, taille par taille.",
+            "orders": "Les commandes : leur client, leur statut, leurs dates de commande et de livraison.",
+            "order_items": "Les articles achetés, un par ligne : quel produit, quelle taille, dans quelle commande.",
+        }),
+    )),
+    ("sav", "Les données de l’agent : la boutique n’en a pas besoin pour vendre. Ses tables renvoient aux clients, commandes et articles de shop.", (
+        ("Les dossiers", "Ce que les deux graphes créent et font avancer.", {
+            "cases": "Un dossier par action confirmée par le client (retour, échange, remboursement) ou par question confiée à la boutique : son type, son statut, le client, l’article ou la commande, le montant, les échéances.",
+            "case_actions": "Les actions demandées sur un dossier : décision de la boutique, colis reçu, annulation du client, échéance passée. Chacune reprend une pause du graphe dossier, ou est ignorée si le dossier n’attend pas cette action.",
+            "case_messages": "Les mails d’un dossier, de l’agent ou de la boutique.",
+            "refunds": "Les remboursements faits, un au plus par dossier.",
+        }),
+        ("Les accès", "Qui est le client. Aucun nœud ne les lit : le serveur s’en sert avant de lancer un graphe.", {
+            "chat_owners": "Quel client a ouvert chaque chat. La conversation elle-même n’est pas ici : elle est gardée par le graphe, dans le schéma langgraph.",
+            "mcp_tokens": "Les jetons du serveur MCP et leur client. Seule leur empreinte est gardée.",
+        }),
+    )),
 )
 
 # Statements the analysis reaches but this node cannot run: the reason is in an argument it does not follow.

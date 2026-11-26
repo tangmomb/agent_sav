@@ -95,14 +95,14 @@ def test_the_customer_agrees_before_anything_is_written(call, query, mode):
     error, text = call("propose_return", RETURN, agree=True, asked=asked, mode=mode)
     assert not error and json.loads(text)["status"] == "awaiting_parcel"
     assert len(asked) == 1 and "Retour : Pull en laine" in asked[0] and "89,00 €" in asked[0]
-    assert query("SELECT kind, item_id FROM shop.cases") == [("return", PULL)]
+    assert query("SELECT kind, item_id FROM sav.cases") == [("return", PULL)]
 
 
 @pytest.mark.parametrize("agree", [False, "decline"])
 def test_without_agreement_nothing_is_written(call, query, agree):
     error, text = call("propose_return", RETURN, agree=agree)
     assert not error and "rien n’a été enregistré" in text
-    assert query("SELECT 1 FROM shop.cases") == []
+    assert query("SELECT 1 FROM sav.cases") == []
 
 
 @pytest.mark.parametrize("mode", ["auto", "legacy"])
@@ -111,7 +111,7 @@ def test_a_client_that_cannot_ask_cannot_act(call, query, mode):
         error, _ = call("propose_return", RETURN, mode=mode)
         assert not error  # an error result is a refusal too
     assert "elicitation" in str(root(raised.value)).lower() or isinstance(root(raised.value), AssertionError)
-    assert query("SELECT 1 FROM shop.cases") == []
+    assert query("SELECT 1 FROM sav.cases") == []
 
 
 def test_the_rules_come_before_the_question(call, query):
@@ -120,12 +120,12 @@ def test_the_rules_come_before_the_question(call, query):
     assert error and "unknown_item" in text and asked == []
     error, text = call("propose_refund", refund("DEMO-1001")[1], agree=True, asked=asked)
     assert error and "delivered" in text and asked == []
-    assert query("SELECT 1 FROM shop.cases") == []
+    assert query("SELECT 1 FROM sav.cases") == []
 
 
 def test_the_amount_comes_from_the_rules(call, query):
     call("propose_refund", {"order_id": "DEMO-1005", "reason": "lost_parcel", "amount_euros": 999}, agree=True)
-    assert query("SELECT amount_cents FROM shop.refunds") == [(4200,)]
+    assert query("SELECT amount_cents FROM sav.refunds") == [(4200,)]
 
 
 def test_exchange_cancel_and_question(call, query):

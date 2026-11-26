@@ -17,7 +17,7 @@ def last_result(model):
 
 
 def cases(query):
-    return query("SELECT kind, item_id, order_id, size, color, status, amount_cents FROM shop.cases ORDER BY created_at")
+    return query("SELECT kind, item_id, order_id, size, color, status, amount_cents FROM sav.cases ORDER BY created_at")
 
 
 def test_the_agent_reads_then_answers(chat, model, query):
@@ -193,7 +193,7 @@ def test_the_database_itself_refuses_a_second_case(chat, model, query):
     chat.say("retour")
     chat.say("oui")
     with pytest.raises(psycopg.errors.UniqueViolation):
-        query("""INSERT INTO shop.cases (id, request_key, customer_id, kind, route, rule, order_id, item_id)
+        query("""INSERT INTO sav.cases (id, request_key, customer_id, kind, route, rule, order_id, item_id)
                  VALUES ('SAV-X', 'x', 'CLI-001', 'exchange', 'auto', 'x', 'DEMO-1001', %s)""", PULL)
 
 
@@ -212,7 +212,7 @@ def test_the_amount_comes_from_the_rules(chat, model, query):
     model.plays("Remboursé.")
     chat.say("oui")
     assert cases(query) == [("refund", None, LOST, None, None, "completed", 4200)]
-    assert query("SELECT order_id, amount_cents FROM shop.refunds") == [(LOST, 4200)]
+    assert query("SELECT order_id, amount_cents FROM sav.refunds") == [(LOST, 4200)]
 
 
 def test_a_question_goes_to_the_shop_without_a_summary(chat, model, query, support):
@@ -255,7 +255,7 @@ def test_a_question_sent_to_the_shop_cannot_be_cancelled(chat, model, query, sup
     model.plays(("cancel_case", {"case_id": case["id"]}), "Elle ne s’annule pas.")
     assert chat.say("Annulez ma question") == "Elle ne s’annule pas."
     assert not chat.waiting and "question_sent" in last_result(model)
-    assert query("SELECT count(*) FROM shop.case_actions") == [(0,)]
+    assert query("SELECT count(*) FROM sav.case_actions") == [(0,)]
 
 
 def test_wrong_calls_come_back_as_errors(chat, model):

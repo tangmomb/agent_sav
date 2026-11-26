@@ -72,6 +72,7 @@ svg text { fill: var(--ink); font-family: system-ui, sans-serif; }
 .dim .bridge { opacity: .12; }
 .table { cursor: pointer; }
 .table rect { fill: #10130f; stroke: #394036; }
+.table.sav rect { fill: #0f1214; stroke: #36404a; }  /* the agent's tables, apart from the shop's */
 .table text { font: 13px var(--mono); text-anchor: middle; dominant-baseline: central; }
 .table:hover rect { fill: #1a1f18; }
 .table:focus { outline: none; }
