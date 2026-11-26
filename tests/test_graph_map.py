@@ -82,11 +82,11 @@ def test_both_schemas_are_all_explained():
     from agent_sav.database import SAV_TABLES, SHOP_TABLES
 
     schemas = {schema["name"]: schema for schema in graph_map()["schemas"]}
-    shown = {name: [table["name"] for group in schema["groups"] for table in group["tables"]] for name, schema in schemas.items()}
+    shown = {name: [table["name"] for table in schema["tables"]] for name, schema in schemas.items()}
     assert sorted(shown["shop"]) == sorted(SHOP_TABLES) and sorted(shown["sav"]) == sorted(SAV_TABLES)
-    described = [name for *_, groups in graph_notes.SCHEMAS for *_, tables in groups for name in tables]
+    described = [name for *_, tables in graph_notes.SCHEMAS for name in tables]
     assert sorted(described) == sorted(SHOP_TABLES + SAV_TABLES)
-    links = {table["name"]: table["links"] for schema in schemas.values() for group in schema["groups"] for table in group["tables"]}
+    links = {table["name"]: table["links"] for schema in schemas.values() for table in schema["tables"]}
     assert links["cases"] == ["shop.customers", "shop.orders", "shop.order_items"] and links["customers"] == []
     assert links["case_actions"] == ["sav.cases"]
 

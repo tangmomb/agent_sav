@@ -1,7 +1,3 @@
-import hashlib
-import secrets
-from uuid import uuid4
-
 import psycopg
 from psycopg.rows import dict_row
 
@@ -54,23 +50,6 @@ class Shop:
                     PRIMARY KEY (product_id, size)
                 );
                 ALTER TABLE shop.orders ADD COLUMN IF NOT EXISTS delivered_on date;
-                -- A chat belongs to the customer who opened it: neither the browser nor the model says who they are.
-                -- The conversation itself is kept by the graph, in the langgraph schema.
-                -- This table and mcp_tokens were in the shop schema before, and this one was called chats.
-                ALTER TABLE IF EXISTS shop.chats RENAME TO chat_owners;
-                ALTER TABLE IF EXISTS shop.chat_owners SET SCHEMA sav;
-                ALTER TABLE IF EXISTS shop.mcp_tokens SET SCHEMA sav;
-                CREATE TABLE IF NOT EXISTS sav.chat_owners (
-                    id text PRIMARY KEY,
-                    customer_id text NOT NULL REFERENCES shop.customers,
-                    created_at timestamptz NOT NULL DEFAULT now()
-                );
-                -- Tokens of the MCP server: only their hash is kept.
-                CREATE TABLE IF NOT EXISTS sav.mcp_tokens (
-                    token_hash text PRIMARY KEY,
-                    customer_id text NOT NULL REFERENCES shop.customers,
-                    created_at timestamptz NOT NULL DEFAULT now()
-                );
             """)
             seed_demo(conn)
 
@@ -120,38 +99,3 @@ class Shop:
             WHERE bought.id = %s AND wanted.color = %s AND s.product_id = wanted.id
                 AND s.size = %s AND s.quantity + %s >= 0
         """, (change, product_id, color, size or "", change)).rowcount)
-
-    def open_chat(self, customer_id: str) -> str | None:
-        """Starts a chat for a signed-in customer (the demo has no password). Returns its secret id."""
-        chat_id = f"chat-{uuid4()}"
-        with psycopg.connect(self.dsn) as conn:
-            created = conn.execute(
-                "INSERT INTO sav.chat_owners (id, customer_id) SELECT %s, id FROM shop.customers WHERE id = %s",
-                (chat_id, customer_id),
-            ).rowcount
-        return chat_id if created else None
-
-    def chat_customer(self, chat_id: str) -> dict | None:
-        with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
-            return conn.execute("""
-                SELECT c.id, c.first_name, c.name FROM sav.chat_owners o JOIN shop.customers c ON c.id = customer_id
-                WHERE o.id = %s
-            """, (chat_id,)).fetchone()
-
-    def create_token(self, customer_id: str) -> str | None:
-        """A new MCP token for a customer, shown once."""
-        token = f"sav_{secrets.token_urlsafe(32)}"
-        with psycopg.connect(self.dsn) as conn:
-            created = conn.execute(
-                "INSERT INTO sav.mcp_tokens (token_hash, customer_id) SELECT %s, id FROM shop.customers WHERE id = %s",
-                (hashlib.sha256(token.encode()).hexdigest(), customer_id),
-            ).rowcount
-        return token if created else None
-
-    def token_customer(self, token: str) -> str | None:
-        if not token:
-            return None
-        with psycopg.connect(self.dsn) as conn:
-            row = conn.execute("SELECT customer_id FROM sav.mcp_tokens WHERE token_hash = %s",
-                               (hashlib.sha256(token.encode()).hexdigest(),)).fetchone()
-        return row[0] if row else None

@@ -17,9 +17,9 @@ from types import ModuleType
 
 from langgraph.graph import END, START
 
-from . import case_graph, cases, conversation, graph_notes, model, policy, shop, tools
+from . import case_graph, cases, chats, conversation, graph_notes, model, policy, shop, tools
 
-MODULES = {module.__name__.split(".")[-1]: module for module in (conversation, case_graph, cases, shop, tools, model)}
+MODULES = {module.__name__.split(".")[-1]: module for module in (conversation, case_graph, cases, chats, shop, tools, model)}
 # What the names the code uses for its collaborators stand for.
 OBJECTS = {"cases": ("cases", "Cases"), "Cases": ("cases", "Cases"), "shop": ("shop", "Shop"), "Shop": ("shop", "Shop"),
            "toolbox": ("tools", "")}
@@ -616,7 +616,7 @@ def graph_json(name: str, graph, module: ModuleType, builder_name: str) -> dict:
 def tables() -> list[dict]:
     """The tables of the shop and sav schemas, as the setup creates them. Links name the schema: some cross over."""
     found: dict[str, dict] = {}
-    for module in ("shop", "cases"):
+    for module in ("shop", "cases", "chats"):
         for node in ast.walk(tree(module)):
             if not (isinstance(node, ast.Constant) and isinstance(node.value, str) and "CREATE TABLE" in node.value):
                 continue
@@ -643,10 +643,10 @@ def graph_map() -> dict:
     return {
         "graphs": graphs,
         "tables": [table for table in tables() if table["name"] in used],
-        "schemas": [{"name": schema, "note": about, "groups": [{"name": name, "note": note, "tables": [
+        "schemas": [{"name": schema, "note": about, "tables": [
             {"name": table["name"], "note": described[table["name"]], "links": table["links"], "used": table["name"] in used}
             for table in sorted(tables(), key=lambda each: list(described).index(each["name"]) if each["name"] in described else -1)
-            if table["name"] in described]} for name, note, described in groups]} for schema, about, groups in graph_notes.SCHEMAS],
+            if table["name"] in described]} for schema, about, described in graph_notes.SCHEMAS],
         "bridges": [dict(zip(("from_graph", "from", "table", "to_graph", "to", "note"), bridge)) for bridge in graph_notes.BRIDGES],
     }
 

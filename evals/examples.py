@@ -185,7 +185,7 @@ def gathered(found: dict[tuple, list]) -> dict:
 
 
 def play(support: Support, clock, staged: list[str]) -> str:
-    chat_id = support.shop.open_chat(CUSTOMER)
+    chat_id = support.chats.open(CUSTOMER)
 
     def say(message: str) -> bool:
         answer = support.chat(chat_id, message)

@@ -1,4 +1,5 @@
 -r requirements.txt
 langgraph-cli[inmem]==0.4.43
 pytest==9.2.0
+uvicorn==0.54.0  # serves the contact server in the alert tests
 ruff==0.17.6

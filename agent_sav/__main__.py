@@ -21,8 +21,6 @@ def main() -> int:
     web.add_argument("--port", type=int, default=8000)
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--public", action="store_true", help="Démo publique : une boutique isolée par visiteur")
-    commands.add_parser("mcp", help="Lance le serveur MCP").add_argument("--port", type=int, default=8765)
-    commands.add_parser("mcp-token", help="Crée un jeton MCP pour un client").add_argument("--customer", default=DEMO_CUSTOMER)
     start = commands.add_parser("open", help="Ouvre un chat avec un premier message")
     start.add_argument("message")
     start.add_argument("--customer", default=DEMO_CUSTOMER)
@@ -53,27 +51,13 @@ def main() -> int:
             else:
                 serve(dsn, args.port, support, host=args.host)
             return 0
-        if args.command == "mcp":
-            import uvicorn
-
-            from .mcp_server import build_app
-
-            initialize_database(dsn)
-            uvicorn.run(build_app(support), host="127.0.0.1", port=args.port)
-            return 0
-        if args.command == "mcp-token":
-            token = support.shop.create_token(args.customer)
-            if token is None:
-                raise ValueError("Client introuvable.")
-            print(token)
-            return 0
         if args.command == "init":
             initialize_database(dsn)
             print("Base SAV initialisée.")
             return 0
 
         if args.command in ("open", "say"):
-            chat_id = support.shop.open_chat(args.customer) if args.command == "open" else args.chat_id
+            chat_id = support.chats.open(args.customer) if args.command == "open" else args.chat_id
             if chat_id is None:
                 raise ValueError("Client introuvable.")
             output = {"chat_id": chat_id, **support.chat(chat_id, args.message)}

@@ -42,7 +42,7 @@ class Agent:
             case, refusal = self.support.cases.open(f"prior:{number}", scenario.customer, action, args)
             assert refusal is None, refusal
         self.support.run_cases()
-        self.chat_id = self.support.shop.open_chat(scenario.customer)
+        self.chat_id = self.support.chats.open(scenario.customer)
 
     def complete(self, system, messages, tools) -> AIMessage:
         self.calls += 1

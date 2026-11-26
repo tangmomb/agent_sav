@@ -25,7 +25,7 @@ Le graphe complet : [pipeline_ecommerce.mmd](pipeline_ecommerce.mmd).
   geste commercial part du montant demandé, plafonné et toujours validé par la boutique.
 - **Réponses vérifiées.** [grounding.py](agent_sav/grounding.py) retient une réponse qui cite un montant absent des outils, ou
   qui annonce une action que rien n'a enregistrée.
-- **Pannes.** Checkpoints PostgreSQL, écritures à clé d'idempotence, commandes traitées une seule fois et dans l'ordre. Un arrêt
+- **Pannes.** Checkpoints PostgreSQL, écritures à clé d'idempotence, actions sur un dossier traitées une seule fois et dans l'ordre. Un arrêt
   entre deux écritures se reprend sans doublon.
 - **Identité.** Aucun outil ne prend le client en paramètre : il vient du chat ouvert côté serveur.
 - **Chronologie.** Le back-office montre chaque étape qui a mené au dossier, réponses retenues comprises.
@@ -75,17 +75,9 @@ La boutique est sur `/`, le back-office sur `/shop/support`, les mails des clien
 graphes sur `/graphs`. Ce mode partage une
 seule boutique : il n'accepte que cette machine.
 
-## MCP
+## Alerte de l'opérateur
 
-Les outils du SAV sont aussi un serveur MCP, pour d'autres agents. Le jeton dit qui est le client, les mêmes règles
-s'appliquent, et l'accord est demandé à la personne par élicitation : un client MCP sans élicitation peut lire, pas agir.
-
-```
-python -m agent_sav mcp-token --customer CLI-001
-python -m agent_sav mcp               # http://127.0.0.1:8765/mcp
-```
-
-Dans l'autre sens, l'agent prévient l'opérateur par un
+L'agent prévient l'opérateur par un
 [serveur MCP de contact](https://github.com/tangmomb/mcp_contact_me) (`CONTACT_MCP_URL`, `CONTACT_MCP_TOKEN`) : un message
 groupé, au plus toutes les 30 minutes, sans le texte des clients.
 

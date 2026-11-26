@@ -12,6 +12,7 @@ from langgraph.types import Command
 
 from .case_graph import build_case_graph
 from .cases import Cases
+from .chats import Chats
 from .conversation import Context, build_conversation_graph
 from .database import open_checkpointer, rename_state_key
 from .model import Complete, complete
@@ -70,6 +71,7 @@ class Support:
         self.model = model
         self.shop = Shop(dsn)
         self.cases = Cases(dsn, clock)
+        self.chats = Chats(dsn)
 
     @contextmanager
     def thread(self, thread_id: str, build: Callable) -> Iterator[tuple]:
@@ -84,7 +86,7 @@ class Support:
 
     def chat(self, chat_id: str, message: str, message_id: str | None = None) -> dict:
         """Handles a customer message once. Sending it again resumes a failed run, or gives the same answer."""
-        customer = self.shop.chat_customer(chat_id)
+        customer = self.chats.customer(chat_id)
         if customer is None:
             raise UnknownChat("Chat inconnu.")
         context = Context(customer["id"], customer["first_name"])

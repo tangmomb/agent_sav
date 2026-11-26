@@ -6,10 +6,11 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from psycopg.rows import dict_row
 
 from .cases import Cases
+from .chats import Chats
 from .shop import Shop
 
 SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock")  # the shop's own data
-SAV_TABLES = ("cases", "case_actions", "case_messages", "refunds", "chat_owners", "mcp_tokens")  # the agent's
+SAV_TABLES = ("cases", "case_actions", "case_messages", "refunds", "chat_owners")  # the agent's
 CHECKPOINT_TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes")
 
 
@@ -42,5 +43,6 @@ def initialize_database(dsn: str) -> None:
 
         Shop(dsn).setup()
         Cases(dsn).setup()
+        Chats(dsn).setup()
         with open_checkpointer(dsn) as checkpointer:
             checkpointer.setup()

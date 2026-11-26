@@ -286,7 +286,7 @@ def serve(dsn: str, port: int, support: Support | None = None, *, host: str = "1
         def open_chat(self) -> None:
             """Signs a customer in. The demo has no password: it only offers fictional accounts."""
             try:
-                chat_id = self.support.shop.open_chat(str(self.read_json()["customer_id"]))
+                chat_id = self.support.chats.open(str(self.read_json()["customer_id"]))
                 if chat_id is None:
                     raise ValueError
             except (ValueError, KeyError):

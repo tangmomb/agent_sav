@@ -117,7 +117,7 @@ def serve(database, support, monkeypatch):
 
 class Chat:
     def __init__(self, support, customer="CLI-001"):
-        self.support, self.id = support, support.shop.open_chat(customer)
+        self.support, self.id = support, support.chats.open(customer)
         self.waiting = False
 
     def say(self, message, message_id=None):
