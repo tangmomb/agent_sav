@@ -8,7 +8,7 @@ from psycopg.rows import dict_row
 from .cases import Cases
 from .shop import Shop
 
-SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock", "chats", "mcp_tokens", "cases", "case_commands",
+SHOP_TABLES = ("customers", "products", "orders", "order_items", "stock", "chat_owners", "mcp_tokens", "cases", "case_actions",
                "case_messages", "refunds")
 CHECKPOINT_TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes")
 

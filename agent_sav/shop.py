@@ -55,7 +55,9 @@ class Shop:
                 );
                 ALTER TABLE shop.orders ADD COLUMN IF NOT EXISTS delivered_on date;
                 -- A chat belongs to the customer who opened it: neither the browser nor the model says who they are.
-                CREATE TABLE IF NOT EXISTS shop.chats (
+                -- The conversation itself is kept by the graph, in the langgraph schema. Called chats before.
+                ALTER TABLE IF EXISTS shop.chats RENAME TO chat_owners;
+                CREATE TABLE IF NOT EXISTS shop.chat_owners (
                     id text PRIMARY KEY,
                     customer_id text NOT NULL REFERENCES shop.customers,
                     created_at timestamptz NOT NULL DEFAULT now()
@@ -121,7 +123,7 @@ class Shop:
         chat_id = f"chat-{uuid4()}"
         with psycopg.connect(self.dsn) as conn:
             created = conn.execute(
-                "INSERT INTO shop.chats (id, customer_id) SELECT %s, id FROM shop.customers WHERE id = %s",
+                "INSERT INTO shop.chat_owners (id, customer_id) SELECT %s, id FROM shop.customers WHERE id = %s",
                 (chat_id, customer_id),
             ).rowcount
         return chat_id if created else None
@@ -129,8 +131,8 @@ class Shop:
     def chat_customer(self, chat_id: str) -> dict | None:
         with psycopg.connect(self.dsn, row_factory=dict_row) as conn:
             return conn.execute("""
-                SELECT c.id, c.first_name, c.name FROM shop.chats JOIN shop.customers c ON c.id = customer_id
-                WHERE chats.id = %s
+                SELECT c.id, c.first_name, c.name FROM shop.chat_owners o JOIN shop.customers c ON c.id = customer_id
+                WHERE o.id = %s
             """, (chat_id,)).fetchone()
 
     def create_token(self, customer_id: str) -> str | None:

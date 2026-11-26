@@ -83,7 +83,7 @@ def build_server(support: Support) -> MCPServer:
             return "Le client n’a pas confirmé : rien n’a été enregistré."
         customer_id, args, key = customer(ctx), checked(name, args), f"mcp:{uuid4()}"
         if name == "cancel_case":
-            support.cases.command(args["case_id"], "cancel", key)
+            support.cases.add_action(args["case_id"], "cancel", key)
             case_id = args["case_id"]
         else:
             case, verdict = support.cases.open(key, customer_id, name, args)

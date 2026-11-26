@@ -11,7 +11,7 @@
                                                 ├─ expire
                                                 └─ cancel
 
-Pauses are resumed with a command (see Cases.command). Nothing is written before an interrupt in the same
+Pauses are resumed with an action from shop.case_actions (see Cases.add_action). Nothing is written before an interrupt in the same
 node, and each other node does a single write that can be replayed.
 """
 
@@ -85,7 +85,7 @@ def build_case_graph(checkpointer, cases: Cases):
         return {}
 
     def await_parcel(state: CaseState) -> CaseState:
-        """Waits for the article to come back. Deadlines arrive as commands."""
+        """Waits for the article to come back. Deadlines arrive as actions."""
         accepts = ["received", "remind", "expire", "cancel"]
         return resumed(interrupt({"waiting_for": "parcel", "accepts": accepts}, response_schema=ParcelCommand))
 

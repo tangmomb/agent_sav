@@ -207,7 +207,7 @@ def build_conversation_graph(checkpointer, shop: Shop, cases: Cases, model: Comp
         call, args = proposal["call"], proposal["args"]
         key = f"{config['configurable']['thread_id']}:{call['id']}"
         if call["name"] == "cancel_case":
-            cases.command(args["case_id"], "cancel", key)
+            cases.add_action(args["case_id"], "cancel", key)
             outcome = (f"Annulation du dossier {args['case_id']} transmise. Elle prend effet s’il n’a pas été clos "
                        "entre-temps ; un mail le confirme.")
         else:

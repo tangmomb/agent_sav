@@ -19,7 +19,7 @@ ROLES = {
         "submit": "Soumet le dossier à la boutique.",
         "shop_review": "Attend la décision de la boutique, ou sa réponse à une question.",
         "approve": "Accepte la demande. Pour un retour ou un échange, envoie l’étiquette et fixe les échéances.",
-        "await_parcel": "Attend le colis du client. Les échéances arrivent comme des commandes.",
+        "await_parcel": "Attend le colis du client. Les échéances arrivent comme des actions.",
         "remind": "Rappelle au client que son colis est attendu.",
         "settle": "Rembourse, ou transforme l’article acheté en l’article échangé.",
         "reject": "Refuse la demande et rend la variante réservée.",
@@ -48,7 +48,7 @@ READS = {
     "case": {
         ("intake", "case_id"): "Pour chercher le dossier en base.",
         ("submit", "case_id"): "Le dossier à faire avancer.",
-        ("shop_review", "case_id"): "Pour relire le dossier : une question n’attend pas les mêmes commandes qu’une demande.",
+        ("shop_review", "case_id"): "Pour relire le dossier : une question n’attend pas les mêmes actions qu’une demande.",
         ("approve", "case_id"): "Pour relire le dossier : un remboursement n’attend pas de colis.",
         ("remind", "case_id"): "Pour relire le dossier à rappeler au client.",
         ("settle", "case_id"): "Pour relire le dossier : un échange ou un remboursement, et son montant.",
@@ -103,8 +103,8 @@ WHY = [
     ("apply", "Cases.open", "INSERT", "", "Créer le dossier SAV : qui, quoi, quel montant, et s’il est accepté tout de suite ou soumis à la boutique. Le graphe dossier prend la suite."),
     ("give_up", "Cases.open", "INSERT", "", "Créer un dossier de type question, pour que la boutique réponde au client par mail."),
     ("apply", "Shop.move_stock", "UPDATE", "", "Réserver un exemplaire de la nouvelle taille ou couleur pour l’échange. Si le stock est épuisé, l’échange est refusé."),
-    (None, "Cases.command", "INSERT", "", "Déposer la commande d’annulation, que le graphe dossier va traiter. La clé évite de la déposer deux fois."),
-    (None, "Cases.command", "SELECT", "", "Retrouver le numéro de cette commande, même si elle avait déjà été déposée."),
+    (None, "Cases.add_action", "INSERT", "", "Déposer l’action d’annulation, que le graphe dossier va traiter. La clé évite de la déposer deux fois."),
+    (None, "Cases.add_action", "SELECT", "", "Retrouver le numéro de cette action, même si elle avait déjà été déposée."),
 
     # The case graph.
     ("intake", "Cases.get", "SELECT", "", "Lire le dossier : vérifier qu’il existe, puis choisir la sortie selon qu’il est accepté tout de suite ou soumis à la boutique."),
@@ -138,8 +138,8 @@ SITUATIONS = {
         "confirm": ["1. Pause : ce que le client voit", "2. S’il dit oui", "2. Sinon (exemple d’un autre échange, le client change d’avis et ne valide pas la demande)"],
     },
     "case": {
-        "shop_review": ["1. Pause : ce que le nœud attend", "2. À la reprise : la commande reçue"],
-        "await_parcel": ["1. Pause : ce que le nœud attend", "2. À la reprise : la commande reçue"],
+        "shop_review": ["1. Pause : ce que le nœud attend", "2. À la reprise : l’action reçue"],
+        "await_parcel": ["1. Pause : ce que le nœud attend", "2. À la reprise : l’action reçue"],
     },
 }
 
@@ -174,8 +174,8 @@ KEYS = {
     },
     "case": {
         "case_id": "Le dossier que le graphe fait avancer. C’est sa seule entrée : tout le reste est relu en base.",
-        "command": "La commande qui a repris la dernière pause (accepter, refuser, colis reçu…) : elle décide de la suite.",
-        "last_command": "Le numéro de la dernière commande reçue, pour ne jamais la traiter deux fois. Lu hors du graphe, par Support.run_case.",
+        "command": "L’action qui a repris la dernière pause (accepter, refuser, colis reçu…) : elle décide de la suite.",
+        "last_command": "Le numéro de la dernière action reçue, pour ne jamais la traiter deux fois. Lu hors du graphe, par Support.run_case.",
     },
 }
 
@@ -240,8 +240,8 @@ EXITS = {
 BRIDGES = (
     ("conversation", "apply", "cases", "case", "intake", "Le dossier ouvert fait démarrer son graphe (Support.run_cases)."),
     ("conversation", "give_up", "cases", "case", "intake", "La demande transmise ouvre un dossier de type question."),
-    ("conversation", "apply", "case_commands", "case", "shop_review", "L’annulation du client reprend la pause."),
-    ("conversation", "apply", "case_commands", "case", "await_parcel", "L’annulation du client reprend la pause."),
+    ("conversation", "apply", "case_actions", "case", "shop_review", "L’annulation du client reprend la pause."),
+    ("conversation", "apply", "case_actions", "case", "await_parcel", "L’annulation du client reprend la pause."),
 )
 
 # How the shop schema is organised: its tables, by what they are for.
@@ -254,13 +254,13 @@ SHOP = (
         "order_items": "Les articles achetés, un par ligne : quel produit, quelle taille, dans quelle commande.",
     }),
     ("Le SAV", "Ce que les deux graphes créent et font avancer.", {
-        "cases": "Les dossiers, au centre de tout : leur type, leur statut, le client, l’article ou la commande, le montant, les échéances.",
-        "case_commands": "Ce qui arrive à un dossier : décision de la boutique, colis reçu, annulation du client, échéance passée. Chaque commande reprend une pause du graphe dossier.",
+        "cases": "Un dossier par action confirmée par le client (retour, échange, remboursement) ou par question confiée à la boutique : son type, son statut, le client, l’article ou la commande, le montant, les échéances.",
+        "case_actions": "Les actions demandées sur un dossier : décision de la boutique, colis reçu, annulation du client, échéance passée. Chacune reprend une pause du graphe dossier, ou est ignorée si le dossier n’attend pas cette action.",
         "case_messages": "Les mails d’un dossier, de l’agent ou de la boutique.",
         "refunds": "Les remboursements faits, un au plus par dossier.",
     }),
     ("Les accès", "Qui est le client. Aucun nœud ne les lit : le serveur s’en sert avant de lancer un graphe.", {
-        "chats": "Quel client a ouvert chaque chat.",
+        "chat_owners": "Quel client a ouvert chaque chat. La conversation elle-même n’est pas ici : elle est gardée par le graphe, dans le schéma langgraph.",
         "mcp_tokens": "Les jetons du serveur MCP et leur client. Seule leur empreinte est gardée.",
     }),
 )
@@ -416,7 +416,7 @@ je suis d’accord, bien sûr, go, oki, 👍 | 👍 mais en L
             "C’est quoi un dossier abandonné ?": """
 Un dossier que le client annule : il revient sur une demande SAV en cours, et le LLM appelle l’outil `cancel_case`. Ce n’est pas l’annulation d’une commande : celle-là, l’agent la transmet à la boutique avec `escalate`.
 
-apply n’annule rien lui-même : il dépose une commande `cancel` dans la table `case_commands`, et le nœud `cancel` du graphe dossier annule vraiment. Si le dossier a été clos entre-temps, la commande est ignorée.
+apply n’annule rien lui-même : il dépose une action `cancel` dans la table `case_actions`, et le nœud `cancel` du graphe dossier annule vraiment. Si le dossier a été clos entre-temps, l’action est ignorée.
 
 Dossier | Annulable ?
 Retour ou échange | Oui, même accepté, jusqu’à la réception du colis

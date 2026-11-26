@@ -255,7 +255,7 @@ def test_a_question_sent_to_the_shop_cannot_be_cancelled(chat, model, query, sup
     model.plays(("cancel_case", {"case_id": case["id"]}), "Elle ne s’annule pas.")
     assert chat.say("Annulez ma question") == "Elle ne s’annule pas."
     assert not chat.waiting and "question_sent" in last_result(model)
-    assert query("SELECT count(*) FROM shop.case_commands") == [(0,)]
+    assert query("SELECT count(*) FROM shop.case_actions") == [(0,)]
 
 
 def test_wrong_calls_come_back_as_errors(chat, model):

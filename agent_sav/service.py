@@ -162,7 +162,7 @@ class Support:
                 log.exception("Dossier %s interrompu", case_id)
 
     def run_case(self, case_id: str) -> None:
-        """Starts the graph of a case if needed, then gives it its pending commands, in order and once each."""
+        """Starts the graph of a case if needed, then gives it its pending actions, in order and once each."""
         with self.thread(f"case:{case_id}", lambda checkpointer: build_case_graph(checkpointer, self.cases)) as (graph, config):
             def run(entry):
                 graph.invoke(entry, config, durability="sync")
@@ -173,26 +173,26 @@ class Support:
                 snapshot = run({"case_id": case_id})
             elif snapshot.next and not snapshot.interrupts:
                 snapshot = run(None)
-            while command := self.cases.next_command(case_id):
+            while command := self.cases.next_action(case_id):
                 if command["id"] <= snapshot.values.get("last_command", 0):  # handled, but stopped before noting it
-                    self.cases.command_done(command["id"], "applied")
+                    self.cases.action_done(command["id"], "applied")
                 elif not snapshot.interrupts or command["kind"] not in snapshot.interrupts[0].value["accepts"]:
-                    self.cases.command_done(command["id"], "ignored")
+                    self.cases.action_done(command["id"], "ignored")
                 else:
                     snapshot = run(Command(resume=command))
-                    self.cases.command_done(command["id"], "applied")
+                    self.cases.action_done(command["id"], "applied")
 
     def act(self, case_id: str, kind: str, payload: dict | None = None) -> dict:
         """What the shop does with a case: approve, reject, answer or received."""
         if self.cases.get(case_id) is None:
             raise NotExpected("Dossier introuvable.")
-        command = self.cases.command(case_id, kind, f"shop:{uuid4()}", payload)
+        command = self.cases.add_action(case_id, kind, f"shop:{uuid4()}", payload)
         self.run_case(case_id)
-        if self.cases.command_outcome(command) == "ignored":
+        if self.cases.action_outcome(command) == "ignored":
             raise NotExpected("Le dossier n’attend pas cette action.")
         return self.cases.get(case_id)
 
     def tick(self) -> None:
         """Applies the deadlines that have passed, and resumes what a crash left unfinished."""
-        self.cases.add_due_commands()
+        self.cases.add_due_actions()
         self.run_cases()

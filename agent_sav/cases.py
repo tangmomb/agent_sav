@@ -1,7 +1,7 @@
 """Support cases in the shop database.
 
 Every write can be replayed: opening a case is keyed by the request that asked for it, moving a case
-forward depends on its current status, and emails and commands are keyed too.
+forward depends on its current status, and emails and actions are keyed too.
 """
 
 import hashlib
@@ -75,8 +75,9 @@ class Cases:
                         OR (kind = 'return' AND status = 'completed'));
                 CREATE UNIQUE INDEX IF NOT EXISTS one_refund_per_order ON shop.cases (order_id, reason)
                     WHERE kind = 'refund' AND status IN ('opened', 'awaiting_shop', 'completed');
-                -- Inputs of the case graph, handled in order and once each.
-                CREATE TABLE IF NOT EXISTS shop.case_commands (
+                -- Inputs of the case graph, handled in order and once each. Called case_commands before.
+                ALTER TABLE IF EXISTS shop.case_commands RENAME TO case_actions;
+                CREATE TABLE IF NOT EXISTS shop.case_actions (
                     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                     case_id text NOT NULL REFERENCES shop.cases,
                     kind text NOT NULL,
@@ -304,36 +305,36 @@ class Cases:
             conn.execute("INSERT INTO shop.refunds (case_id, order_id, amount_cents) VALUES (%s, %s, %s)",
                          (case["id"], case["order_id"], case["amount_cents"]))
 
-    # Commands: what happens to a case from outside (shop, customer, parcel, time).
+    # Actions: what happens to a case from outside (shop, customer, parcel, time).
 
-    def command(self, case_id: str, kind: str, key: str, payload: dict | None = None) -> int:
+    def add_action(self, case_id: str, kind: str, key: str, payload: dict | None = None) -> int:
         with self.connect() as conn:
             conn.execute("""
-                INSERT INTO shop.case_commands (case_id, kind, payload, key) VALUES (%s, %s, %s, %s)
+                INSERT INTO shop.case_actions (case_id, kind, payload, key) VALUES (%s, %s, %s, %s)
                 ON CONFLICT (key) DO NOTHING
             """, (case_id, kind, Json(payload or {}), key))
-            return conn.execute("SELECT id FROM shop.case_commands WHERE key = %s", (key,)).fetchone()["id"]
+            return conn.execute("SELECT id FROM shop.case_actions WHERE key = %s", (key,)).fetchone()["id"]
 
-    def next_command(self, case_id: str) -> dict | None:
+    def next_action(self, case_id: str) -> dict | None:
         with self.connect() as conn:
             return conn.execute("""
-                SELECT id, kind, payload FROM shop.case_commands
+                SELECT id, kind, payload FROM shop.case_actions
                 WHERE case_id = %s AND outcome IS NULL ORDER BY id LIMIT 1
             """, (case_id,)).fetchone()
 
-    def command_done(self, command_id: int, outcome: str) -> None:
+    def action_done(self, action_id: int, outcome: str) -> None:
         with self.connect() as conn:
-            conn.execute("UPDATE shop.case_commands SET outcome = %s WHERE id = %s", (outcome, command_id))
+            conn.execute("UPDATE shop.case_actions SET outcome = %s WHERE id = %s", (outcome, action_id))
 
-    def command_outcome(self, command_id: int) -> str | None:
+    def action_outcome(self, action_id: int) -> str | None:
         with self.connect() as conn:
-            return conn.execute("SELECT outcome FROM shop.case_commands WHERE id = %s", (command_id,)).fetchone()["outcome"]
+            return conn.execute("SELECT outcome FROM shop.case_actions WHERE id = %s", (action_id,)).fetchone()["outcome"]
 
-    def add_due_commands(self) -> None:
-        """Turns the deadlines that have passed into commands, once each."""
+    def add_due_actions(self) -> None:
+        """Turns the deadlines that have passed into actions, once each."""
         with self.connect() as conn:
             conn.execute("""
-                INSERT INTO shop.case_commands (case_id, kind, key)
+                INSERT INTO shop.case_actions (case_id, kind, key)
                 SELECT id, due.kind, id || ':' || due.kind || ':' || due.at
                 FROM shop.cases, LATERAL (VALUES ('expire', due_at), ('remind', remind_at)) AS due (kind, at)
                 WHERE status = 'awaiting_parcel' AND due.at <= %(now)s AND (due.kind = 'expire' OR due_at > %(now)s)
@@ -345,7 +346,7 @@ class Cases:
         with self.connect() as conn:
             return [row["id"] for row in conn.execute("""
                 SELECT id FROM shop.cases WHERE status = 'opened'
-                    OR id IN (SELECT case_id FROM shop.case_commands WHERE outcome IS NULL)
+                    OR id IN (SELECT case_id FROM shop.case_actions WHERE outcome IS NULL)
                 ORDER BY created_at
             """)]
 
@@ -402,11 +403,11 @@ class Cases:
             conn.execute("UPDATE shop.cases SET alerted_at = %s WHERE id = ANY(%s)", (self.clock(), case_ids))
 
     def history(self, case_id: str) -> list[dict]:
-        """What happened to a case: its opening, its commands and its emails, in order."""
+        """What happened to a case: its opening, its actions and its emails, in order."""
         with self.connect() as conn:
             return conn.execute("""
                 SELECT created_at AS at, 'opened' AS kind, route AS text FROM shop.cases WHERE id = %(id)s
-                UNION ALL SELECT created_at, 'command', kind FROM shop.case_commands WHERE case_id = %(id)s AND outcome = 'applied'
+                UNION ALL SELECT created_at, 'command', kind FROM shop.case_actions WHERE case_id = %(id)s AND outcome = 'applied'
                 UNION ALL SELECT created_at, 'mail', split_part(body, E'\\n', 1) FROM shop.case_messages WHERE case_id = %(id)s
                 ORDER BY at
             """, {"id": case_id}).fetchall()

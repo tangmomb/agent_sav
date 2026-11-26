@@ -134,7 +134,7 @@ def test_too_many_automatic_approvals_go_to_the_shop(support, query):
     assert (verdict.outcome, verdict.rule) == ("shop", "many_requests")
 
 
-@pytest.mark.parametrize("step", ["advance", "command_done"])
+@pytest.mark.parametrize("step", ["advance", "action_done"])
 def test_a_crash_changes_nothing_in_the_end(support, opened, query, monkeypatch, step):
     """The refund is paid and the email sent once, whether the crash comes after the write or before noting the command."""
     case_id = opened(RETURN)
